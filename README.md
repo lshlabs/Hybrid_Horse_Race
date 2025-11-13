@@ -1,116 +1,155 @@
-# 🏇 Hybrid Horse Race - GDScript & Godot 2인 팀 바이브코딩 프로젝트
+
+# Hybrid Horse Race (가칭)
+
+## 프로젝트 개요
+
+**Hybrid Horse Race**는 경마 규칙에 증강 시스템을 결합한 멀티플레이어 캐주얼 웹 게임입니다.  
+로그인 시스템 없이, 호스트가 생성한 초대 링크로 누구나 쉽게 접속해 함께 플레이할 수 있는 환경을 목표로 합니다.  
+게임 연출보다는 UI 완성도를 최우선으로 하여 직관적이고 쾌적한 게임 경험을 제공합니다.
 
 ---
 
-## 🎯 프로젝트 개요
+## 주요 기능
 
-- **프로젝트명**: Hybrid Horse Race  
-- **장르**: 2D 전략 경마 시뮬레이션 (라운드 기반)  
-- **엔진 및 언어**: Godot Engine 4.x (또는 3.x) + GDScript  
-- **개발 방식**: 2인 팀 바이브코딩 (LLM 프롬프트 중심 코드 작성 및 실시간 협업)  
-- **핵심 기능**:  
-  - AI 주행 로직 기반 경마 시뮬레이션  
-  - 라운드별 증강(Augment) 선택 및 효과 처리  
-  - 실시간 결과 반영 및 최종 승자 판정  
-  - 간단 UI/UX와 씬 전환  
-  - JSON 기반 저장 및 불러오기  
-- **목표**:  
-  - GDScript만으로 완전한 프로토타입 구현  
-  - 빠른 개발과 LLM 도움 기반 협업 강화  
-  - 확장성과 유지보수 용이한 코드 구조  
+### 로비
+- 플레이할 세트 수 조절 UI 제공
+- 증강 새로고침 횟수 조절 UI 제공
+- 호스트 전용 초대 URL 생성 및 클립보드 복사 기능
 
----
+### 대기실
+- 참가자 리스트, 호스트/참가자 구분, 준비 상태 실시간 표시
+- 빈 슬롯 노출 및 준비 완료 버튼 활성/비활성화
 
-## 👥 역할 분담 가이드
+### 증강 선택
+- 3종의 증강 카드 랜덤 제공 및 선택 확정 버튼
+- 증강 새로고침 버튼과 남은 횟수 표시
 
-| 역할                   | 담당자 | 주요 책임 및 작업 내용                                                   |
-|------------------------|--------|------------------------------------------------------------------------|
-| **Gameplay & Systems**  | 팀원 A | - 경마 코어 로직 (주행 AI, 상태 관리)<br>- 증강 시스템 (선택, 효과 처리)<br>- 데이터 구조 설계 및 JSON 저장 기능<br>- 게임 룰 및 라운드 진행 제어<br>- 바이브코딩 프롬프트 작성 및 코드 리뷰 참여 |
-| **UI & Presentation**  | 팀원 B | - UI/UX 구현 (버튼, 선택창, 결과 화면)<br>- 씬 및 화면 전환 관리<br>- 간단한 애니메이션 및 이펙트 (Tween 등)<br>- 사운드 관리 및 연출 보조<br>- 바이브코딩 프롬프트 작성 및 코드 리뷰 참여  |
+### 레이스 화면
+- Phaser 3 기반 트랙과 말 아이콘을 활용한 레이스 진행 상황 시각화
+- 실시간 순위 및 진행률 표시
+- 레이스 설정 정보 노출
+- 스킵버튼을 통해 세트 스킵 가능
 
----
+### 세트 결과
+- 순위, 기록 카드 제공
+- 다음 세트 진행 버튼
 
-## 🛠 협업 방식 및 권장 사항
-
-- **바이브코딩 진행**  
-  - LLM(예: ChatGPT)에게 매 작업 단위별 구체적 프롬프트 작성  
-  - 작성된 코드 상호 리뷰 및 개선 요청으로 품질 향상  
-- **버전 관리**  
-  - Git 사용, 간단한 커밋 메시지 작성 (ex. feat: race logic 구현)  
-  - 충돌 방지를 위해 작업 분기(branch) 나누기 권장  
-- **커뮤니케이션**  
-  - 실시간 Discord/Slack 채팅 및 음성 회의 활용  
-  - Notion 등 문서화 툴로 주요 설계 내용 기록  
-- **테스트**  
-  - Godot Editor 내에서 PlayMode 테스트 병행  
-  - 기능별 단위 테스트는 간단한 GDScript 테스트 스크립트로 진행 가능  
-- **코드 스타일**  
-  - GDScript 스타일 가이드 준수 (인덴트, 명명 규칙 등)  
-  - 함수별 역할 명확히 분리, 주석 활용  
+### 최종 결과
+- 우승 연출 애니메이션
+- 최종 순위 리스트
+- 다시 플레이 및 로비 복귀 버튼
+- 결과 공유 버튼
 
 ---
 
-## 🛠 Godot 에디터 설치 및 개발환경 가이드
+## 기술 스택 및 아키텍처
 
-1. **Godot 엔진 다운로드**  
-   - 공식 사이트 방문: https://godotengine.org/download  
-   - 운영체제(Windows/Mac/Linux)에 맞는 버전 선택 후 다운로드  
-   - Godot 4.x 권장 (안정 버전 확인 후 선택 가능)  
+### 프런트엔드
+- **프레임워크**: React + Vite + TypeScript (SPA)
+- **스타일링**: Tailwind CSS (커스텀 테마), `shadcn/ui` 또는 `daisyUI` 선택적 활용
+- **애니메이션**: Framer Motion (버튼, 카드, 화면 전환)
+- **상태 관리**: Zustand
+- **게임 씬 렌더링**: Phaser 3 (레이스 캔버스)
 
-2. **Godot 프로젝트 생성**  
-   - Godot 실행 후 "New Project" 선택  
-   - 프로젝트 이름 입력 (ex. HybridHorseRace)  
-   - 프로젝트 저장 위치 지정  
-   - Renderer는 기본값 사용 (Vulkan 또는 GLES3/GLES2)  
-   - "Create & Edit" 클릭하여 프로젝트 열기  
+### 백엔드 및 실시간 동기화
+- **실시간 DB**: Firebase Firestore (룸 상태 및 게임 데이터 동기화)
+- **서버 로직**: Firebase Cloud Functions (룸 생성, 증강 새로고침, 레이스 시뮬레이션, 세트 진행)
+- **환경 변수 관리**: Firebase 환경 변수로 비밀값 안전 관리
 
-3. **GDScript 스크립트 작성**  
-   - Scene 생성 후 Node 선택  
-   - 오른쪽에서 "Attach Script" 클릭 → GDScript 선택  
-   - 코드 작성 및 저장  
+### 배포
+- 프런트엔드: GitHub Pages (`gh-pages` 브랜치)
+- 백엔드: Firebase Hosting 및 Firebase CLI
 
-4. **실행 및 디버깅**  
-   - 상단 ▶ 플레이 버튼 클릭하여 게임 실행  
-   - 에러 발생 시 하단 Debug 창 확인  
-   - 필요 시 브레이크포인트 설정 및 변수 값 확인  
-
-5. **Git 연동**  
-   - 프로젝트 폴더에서 Git 저장소 초기화 (로컬 또는 원격)  
-   - VSCode, Cursor 등에서 코드 편집 후 커밋/푸시 가능  
+### 기타
+- 아이콘: Lucide, Heroicons
+- 일러스트 및 애니메이션: Lottie, 커스텀 SVG
+- 국제화(i18n) 필요 시: i18next
 
 ---
 
-## 🖥 Cursor + Godot 협업 워크플로우
+## Firestore 데이터 모델 예시
 
-### 1. 코드 작성 및 수정 (Cursor IDE)
-- Godot 프로젝트 Git 저장소를 Cursor에서 클론(clone)  
-- GDScript(.gd) 파일 및 리소스 편집  
-- AI 보조(바이브코딩)로 빠른 코드 작성 및 리뷰 진행  
-- 변경사항을 커밋(commit) 및 푸시(push)  
+```
+rooms/{roomId}:
+  - hostId: string
+  - title: string
+  - setCount: number
+  - rerollLimit: number
+  - status: string (e.g. waiting, augmentSelection, racing, finished)
+  - currentSet: number
+  - createdAt: timestamp
 
-### 2. 로컬 Godot 에디터에서 테스트  
-- 로컬 환경에서 Git 저장소 최신 상태로 pull  
-- Godot 에디터에서 프로젝트 열기  
-- 변경된 코드 실행 및 기능 확인  
-- 발견된 버그나 개선 사항을 메모 또는 이슈 등록  
+rooms/{roomId}/players/{playerId}:
+  - name: string
+  - avatar: string
+  - isHost: boolean
+  - isReady: boolean
+  - horseStats: object
+  - selectedAugments: array
 
-### 3. 이슈 반영 및 코드 개선  
-- Cursor에서 해당 부분 코드 수정 및 리뷰  
-- 다시 Git 커밋/푸시  
-- 로컬에서 테스트 반복  
+rooms/{roomId}/sets/{setId}:
+  - availableAugments: array
+  - selections: object (playerId → augment)
+  - raceResult: object
+  - summary: object
 
-### 4. 협업 팁  
-- 커밋 메시지는 명확하고 간결하게 (ex. feat: 증강 시스템 UI 추가)  
-- 주요 변경 시 Pull Request(PR) 및 코드 리뷰 필수  
-- Discord/Slack 같은 실시간 커뮤니케이션 툴 활용  
-- Notion이나 Wiki에 개발 문서 및 작업 내용 정리  
+rooms/{roomId}/logs/{logId} (선택):
+  - timestamp: timestamp
+  - event: string
+  - details: object
+```
 
 ---
 
-### 요약
-- Cursor는 코드 작성과 바이브코딩에 최적화  
-- Godot 에디터는 실행 및 디버깅 담당  
-- Git으로 소스 동기화 및 협업 진행  
-- 상호 피드백과 리뷰로 완성도 향상
+## 개발 로드맵 (예상 6주)
+
+| 주차 | 목표 및 작업 내용                              |
+|-------|----------------------------------------------|
+| 1주차 | 프로젝트 초기화, Tailwind 테마 설정, Firebase 환경 구성 |
+| 2주차 | 로비 및 대기실 UI 구현, 세트 수 및 새로고침 횟수 입력, 초대 URL 생성 기능 |
+| 3주차 | 증강 선택 화면 UI 및 증강 새로고침 로직 구현, Firestore 연동 |
+| 4주차 | Phaser 3를 활용한 레이스 씬 렌더링, Cloud Functions 레이스 시뮬레이션 구현 |
+| 5주차 | 세트 결과 및 최종 결과 화면 구현, 애니메이션 적용, UX 개선 |
+| 6주차 | GitHub Pages 및 Firebase 배포, QA 테스트, 피드백 반영 |
 
 ---
+
+## 품질 관리 및 운영
+
+- **테스트**:  
+  - Vitest로 증강 및 능력치 로직 단위 테스트 작성  
+  - Firebase Emulator Suite로 로컬 환경에서 기능 검증  
+- **모니터링**:  
+  - Firebase Crashlytics(웹 지원 시) 또는 Sentry 활용하여 오류 추적  
+- **디자인 시스템**:  
+  - Tailwind 커스텀 테마 (다크 톤 + 네온 하이라이트)  
+  - 재사용 가능한 공통 컴포넌트 (카드, 버튼, 배지 등) 제작
+
+---
+
+## 리스크 및 대응 방안
+
+| 리스크               | 대응 방안                                           |
+|----------------------|----------------------------------------------------|
+| 실시간 지연 및 지연감 | Firestore 문서 구조 최적화 및 플레이어 수 제한(최대 8명) |
+| 게임 밸런싱 문제     | 플레이 로그 기반 증강 및 능력치 데이터 분석 후 조정    |
+| UI 구현 난이도       | 초기에 디자인 토큰, 컴포넌트 팔레트 정의 및 문서화       |
+| Firebase 비용 증가   | 무료 플랜 사용량 주기적 모니터링, 필요 시 플랜 업그레이드 |
+
+---
+
+## 향후 확장 아이디어
+
+- React Native + Expo 기반 모바일 앱 확장
+- 플레이 로그 분석 도구 및 리플레이 기능 추가
+- 글로벌 다국어 지원 및 커뮤니티 기능 강화
+
+---
+
+## 라이선스 및 기여
+
+본 프로젝트는 개인 또는 팀 내부 용도로 개발 중이며, 오픈소스화 계획은 추후 별도 공지 예정입니다.
+
+---
+
+감사합니다.
