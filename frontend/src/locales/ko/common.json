@@ -1,0 +1,90 @@
+{
+  "appTitle": "하이브리드 경마 레이스",
+  "appDescription": "초대 링크를 공유해 친구들과 빠르게 경주를 시작하세요.",
+  "controls": {
+    "participants": {
+      "label": "참가자 수",
+      "helper": "최대 {{count}}명까지 입장 가능합니다"
+    },
+    "sets": {
+      "label": "세트 수",
+      "helper": "최대 {{count}}세트까지 지원합니다"
+    },
+    "reroll": {
+      "label": "증강 새로고침",
+      "helper": "세트 당 사용 가능한 새로고침 횟수"
+    }
+  },
+  "invite": {
+    "title": "URL을 공유하여 초대하기",
+    "copy": "복사"
+  },
+  "navigation": {
+    "toRunStyle": "말 선택으로 이동",
+    "toLobby": "로비로 이동"
+  },
+  "lobby": {
+    "title": "플레이어 준비 현황",
+    "subtitle": "준비 상태를 확인하고 모두 준비되면 경주를 시작하세요.",
+    "host": "호스트",
+    "status": {
+      "ready": "준비 완료",
+      "waiting": "연결 대기"
+    },
+    "backToLanding": "로비 설정으로 돌아가기",
+    "chooseRunStyle": "말 선택 단계로 이동",
+    "editRunStyle": "말 다시 선택하기",
+    "playerName": "플레이어 {{index}}",
+    "selectedRunStyle": "선택한 주행 습성: {{runStyle}}",
+    "selectedHorse": "선택한 말: {{horseName}}",
+    "emptySlot": "빈 슬롯",
+    "emptySlotStatus": "참가 대기",
+    "invite": "URL을 공유하여 초대하기",
+    "startReady": "모두 준비 완료! 경주 시작",
+    "startWaiting": "모두 준비 완료되면 시작할 수 있어요",
+    "startGame": "게임 시작"
+  },
+  "runStyle": {
+    "title": "말 선택 단계",
+    "headline": "말을 선택하세요",
+    "subtitle": "",
+    "shuffle": "다른 말 보기",
+    "rerollRemaining": "남은 리롤 {{count}}회",
+    "confirm": "이 말과 함께하기",
+    "cancel": "로비 설정으로 돌아가기",
+    "options": {
+      "paceSetter": {
+        "name": "",
+        "tagline": "초반부터 전력 질주",
+        "description": "가장 빠르게 선두를 차지해 상대를 따돌립니다. 지구력 관리를 실패하면 후반에 급격히 무너질 수 있습니다."
+      },
+      "frontRunner": {
+        "name": "",
+        "tagline": "안정적인 선두권 운영",
+        "description": "초반부터 상위권을 유지하며 페이스를 조절합니다. 중반 이후 가속 타이밍 관리가 승패를 좌우합니다."
+      },
+      "stalker": {
+        "name": "",
+        "tagline": "호흡을 맞춰 달리는 전략가",
+        "description": "중단에서 에너지를 아끼다 막판에 추월을 노립니다. 상황 판단과 페이스 컨트롤이 중요합니다."
+      },
+      "closer": {
+        "name": "",
+        "tagline": "폭발적인 막판 질주",
+        "description": "후반 스퍼트가 강력한 타입입니다. 앞선이 무너지거나 틈이 생겼을 때 최고의 위력을 발휘합니다."
+      },
+      "free": {
+        "name": "",
+        "tagline": "상황에 따른 유연한 움직임",
+        "description": "레이스 상황에 맞춰 전략을 유연하게 바꾸는 전천후 타입입니다. 전체 능력치 밸런스가 요구됩니다."
+      }
+    },
+    "horseNames": {
+      "paceSetter": ["제임스", "썬더", "블레이즈", "라이트닝", "와일드 팽"],
+      "frontRunner": ["행크", "프론티어", "스카이워크", "에이스", "윈디"],
+      "stalker": ["미드나잇", "포커스", "텐션", "실루엣", "나이트러너"],
+      "closer": ["파이널 스퍼트", "허리케인", "브레이크어웨이", "라스트샷", "돌풍"],
+      "free": ["크로스로드", "플렉스", "아틀라스", "크리에이티브", "프리폴"]
+    }
+  }
+}

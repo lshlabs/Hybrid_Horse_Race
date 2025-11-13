@@ -152,4 +152,54 @@ rooms/{roomId}/logs/{logId} (선택):
 
 ---
 
+## 초기 세팅 가이드
+
+### 1. 의존성 설치
+
+```bash
+npm install
+npm install --prefix frontend
+npm install --prefix functions
+```
+
+첫 실행 시 Husky가 pre-commit 훅을 자동 설치합니다.
+
+### 2. 환경 변수 구성
+
+- `frontend/.env.example`을 복사하여 `frontend/.env` 파일을 만들고 Firebase 웹 앱 정보로 채웁니다.
+- Functions 비밀값은 `functions/.runtimeconfig.example.json`을 참고해 `firebase functions:config:set`으로 등록합니다.
+
+### 3. 로컬 개발 워크플로
+
+- 프런트엔드 개발 서버: `npm run dev`
+- 유닛 테스트: `npm run test`
+- 코드 품질: `npm run lint`, `npm run format`
+- Firebase Emulator Suite: `npm run emulators` (사전 로그인 필요: `firebase login`)
+
+> 참고: Storybook은 Vite 7 호환성 이슈로 보류 중입니다. Storybook 9 정식 또는 호환 패치가 나오면 재도입을 검토합니다.
+
+---
+
+## 프로젝트 구조
+
+```
+Hybrid_Horse_Race/
+├─ frontend/                # Vite + React SPA
+│  ├─ src/
+│  │  ├─ components/        # 공통 레이아웃 및 UI 컴포넌트
+│  │  ├─ lib/               # Firebase 초기화 등 클라이언트 유틸
+│  │  └─ App.tsx            # 1주차 UI 스캐폴드
+│  ├─ tailwind.config.js    # 다크+네온 테마 토큰
+│  └─ .env.example          # Vite 환경 변수 템플릿
+├─ functions/               # Firebase Cloud Functions (TypeScript)
+│  ├─ src/index.ts          # createRoom 스켈레톤 함수
+│  └─ .runtimeconfig.example.json
+├─ firestore.rules          # 기본 Firestore 보안 규칙
+├─ firebase.json            # Functions & Emulator 설정
+├─ .husky/                  # lint-staged pre-commit 훅
+└─ package.json             # 루트 스크립트와 공용 개발 도구
+```
+
+---
+
 감사합니다.

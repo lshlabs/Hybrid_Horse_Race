@@ -1,0 +1,90 @@
+{
+  "appTitle": "Hybrid Horse Race",
+  "appDescription": "Share the invite link and start racing with friends in seconds.",
+  "controls": {
+    "participants": {
+      "label": "Participants",
+      "helper": "Supports up to {{count}} players"
+    },
+    "sets": {
+      "label": "Set Count",
+      "helper": "Supports up to {{count}} sets"
+    },
+    "reroll": {
+      "label": "Augment Rerolls",
+      "helper": "Available rerolls per set"
+    }
+  },
+  "invite": {
+    "title": "Invite friends with a shareable URL",
+    "copy": "Copy"
+  },
+  "navigation": {
+    "toRunStyle": "Go to Horse Selection",
+    "toLobby": "Go to Lobby"
+  },
+  "lobby": {
+    "title": "Lobby Status",
+    "subtitle": "Check readiness and start the race when everyone is ready.",
+    "host": "Host",
+    "status": {
+      "ready": "Ready",
+      "waiting": "Connecting"
+    },
+    "backToLanding": "Back to Setup",
+    "chooseRunStyle": "Proceed to Horse Selection",
+    "editRunStyle": "Change Selected Horse",
+    "playerName": "Player {{index}}",
+    "selectedRunStyle": "Selected Run Style: {{runStyle}}",
+    "selectedHorse": "Selected Horse: {{horseName}}",
+    "emptySlot": "Empty Slot",
+    "emptySlotStatus": "Awaiting Player",
+    "invite": "Share URL to invite players",
+    "startReady": "All Ready! Start Race",
+    "startWaiting": "Start when everyone is ready",
+    "startGame": "Start Game"
+  },
+  "runStyle": {
+    "title": "Horse Selection",
+    "headline": "Choose Your Horse",
+    "subtitle": "",
+    "shuffle": "Shuffle",
+    "rerollRemaining": "{{count}} reroll left",
+    "confirm": "Ride with this Horse",
+    "cancel": "Back to Setup",
+    "options": {
+      "paceSetter": {
+        "name": "",
+        "tagline": "Sprint from the horn",
+        "description": "Seizes the lead immediately and tries to run away with the race. If stamina management fails, the late fade can be dramatic."
+      },
+      "frontRunner": {
+        "name": "",
+        "tagline": "Steady pressure up front",
+        "description": "Keeps a top position and dictates the pace. The key is picking the right moment to accelerate in the mid game."
+      },
+      "stalker": {
+        "name": "",
+        "tagline": "Measured pursuit",
+        "description": "Tracks the leaders from mid-pack and waits for the perfect opening. Requires keen judgment and rhythm control."
+      },
+      "closer": {
+        "name": "",
+        "tagline": "Explosive late kick",
+        "description": "Builds energy for a final burst. Devastating when the pack collapses or a gap appears in the stretch."
+      },
+      "free": {
+        "name": "",
+        "tagline": "Adapts to any scenario",
+        "description": "Adjusts strategy on the fly. Balanced stats are required to react to whatever the race throws at you."
+      }
+    },
+    "horseNames": {
+      "paceSetter": ["James", "Blaze", "Rapidfire", "Lightning", "Wild Fang"],
+      "frontRunner": ["Hank", "Frontier", "Skywalk", "Ace", "Windy"],
+      "stalker": ["Midnight", "Focus", "Tension", "Silhouette", "Night Runner"],
+      "closer": ["Final Burst", "Hurricane", "Breakaway", "Last Shot", "Tempest"],
+      "free": ["Crossroad", "Flex", "Atlas", "Maverick", "Freefall"]
+    }
+  }
+}

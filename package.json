@@ -1,0 +1,28 @@
+{
+  "name": "hybrid-horse-race",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "npm run dev --prefix frontend",
+    "build": "npm run build --prefix frontend",
+    "test": "npm run test --prefix frontend -- --run",
+    "lint": "npm run lint --prefix frontend",
+    "format": "npm run format --prefix frontend",
+    "functions:build": "npm run build --prefix functions",
+    "emulators": "npm run functions:build && firebase emulators:start",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "firebase-tools": "^13.30.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.3.0"
+  },
+  "lint-staged": {
+    "frontend/**/*.{ts,tsx,js,jsx}": [
+      "cd frontend && npx eslint --fix"
+    ],
+    "frontend/**/*.{ts,tsx,js,jsx,css,md,json}": [
+      "cd frontend && npx prettier --write"
+    ]
+  }
+}

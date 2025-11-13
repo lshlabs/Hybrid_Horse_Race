@@ -1,0 +1,30 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-background text-neutral-100 font-sans antialiased min-h-screen;
+    background-image:
+      radial-gradient(ellipse at top, rgba(56, 189, 248, 0.15), transparent 55%),
+      radial-gradient(ellipse at bottom, rgba(244, 114, 182, 0.12), transparent 50%);
+  }
+
+  a {
+    @apply text-primary transition-colors duration-200 ease-gentle-in-out hover:text-primary/80;
+  }
+
+  ::selection {
+    @apply bg-primary/30 text-white;
+  }
+}
