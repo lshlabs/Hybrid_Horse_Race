@@ -12,7 +12,7 @@
     },
     "reroll": {
       "label": "Augment Rerolls",
-      "helper": "Available rerolls per set"
+      "helper": "Available rerolls"
     }
   },
   "invite": {
@@ -27,6 +27,7 @@
     "title": "Lobby Status",
     "subtitle": "Check readiness and start the race when everyone is ready.",
     "host": "Host",
+    "me": "Me",
     "status": {
       "ready": "Ready",
       "waiting": "Connecting"
@@ -42,13 +43,13 @@
     "invite": "Share URL to invite players",
     "startReady": "All Ready! Start Race",
     "startWaiting": "Start when everyone is ready",
-    "startGame": "Start Game"
+    "startGame": "Start Game",
+    "startGameWaiting": "Waiting for host to start"
   },
   "runStyle": {
     "title": "Horse Selection",
     "headline": "Choose Your Horse",
     "subtitle": "",
-    "shuffle": "Shuffle",
     "rerollRemaining": "{{count}} reroll left",
     "confirm": "Ride with this Horse",
     "cancel": "Back to Setup",
@@ -72,19 +73,13 @@
         "name": "",
         "tagline": "Explosive late kick",
         "description": "Builds energy for a final burst. Devastating when the pack collapses or a gap appears in the stretch."
-      },
-      "free": {
-        "name": "",
-        "tagline": "Adapts to any scenario",
-        "description": "Adjusts strategy on the fly. Balanced stats are required to react to whatever the race throws at you."
       }
     },
     "horseNames": {
       "paceSetter": ["James", "Blaze", "Rapidfire", "Lightning", "Wild Fang"],
       "frontRunner": ["Hank", "Frontier", "Skywalk", "Ace", "Windy"],
       "stalker": ["Midnight", "Focus", "Tension", "Silhouette", "Night Runner"],
-      "closer": ["Final Burst", "Hurricane", "Breakaway", "Last Shot", "Tempest"],
-      "free": ["Crossroad", "Flex", "Atlas", "Maverick", "Freefall"]
+      "closer": ["Final Burst", "Hurricane", "Breakaway", "Last Shot", "Tempest"]
     }
   }
 }

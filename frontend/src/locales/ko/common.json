@@ -12,7 +12,7 @@
     },
     "reroll": {
       "label": "증강 새로고침",
-      "helper": "세트 당 사용 가능한 새로고침 횟수"
+      "helper": "사용 가능한 새로고침 횟수"
     }
   },
   "invite": {
@@ -27,11 +27,12 @@
     "title": "플레이어 준비 현황",
     "subtitle": "준비 상태를 확인하고 모두 준비되면 경주를 시작하세요.",
     "host": "호스트",
+    "me": "나",
     "status": {
       "ready": "준비 완료",
       "waiting": "연결 대기"
     },
-    "backToLanding": "로비 설정으로 돌아가기",
+    "backToLanding": "게임설정으로 돌아가기",
     "chooseRunStyle": "말 선택 단계로 이동",
     "editRunStyle": "말 다시 선택하기",
     "playerName": "플레이어 {{index}}",
@@ -42,14 +43,14 @@
     "invite": "URL을 공유하여 초대하기",
     "startReady": "모두 준비 완료! 경주 시작",
     "startWaiting": "모두 준비 완료되면 시작할 수 있어요",
-    "startGame": "게임 시작"
+    "startGame": "게임 시작",
+    "startGameWaiting": "게임 시작 대기중"
   },
   "runStyle": {
     "title": "말 선택 단계",
-    "headline": "말을 선택하세요",
+    "headline": "함께 할 말을 선택하세요",
     "subtitle": "",
-    "shuffle": "다른 말 보기",
-    "rerollRemaining": "남은 리롤 {{count}}회",
+    "rerollRemaining": "{{count}} 번 리롤 가능",
     "confirm": "이 말과 함께하기",
     "cancel": "로비 설정으로 돌아가기",
     "options": {
@@ -72,19 +73,13 @@
         "name": "",
         "tagline": "폭발적인 막판 질주",
         "description": "후반 스퍼트가 강력한 타입입니다. 앞선이 무너지거나 틈이 생겼을 때 최고의 위력을 발휘합니다."
-      },
-      "free": {
-        "name": "",
-        "tagline": "상황에 따른 유연한 움직임",
-        "description": "레이스 상황에 맞춰 전략을 유연하게 바꾸는 전천후 타입입니다. 전체 능력치 밸런스가 요구됩니다."
       }
     },
     "horseNames": {
       "paceSetter": ["제임스", "썬더", "블레이즈", "라이트닝", "와일드 팽"],
       "frontRunner": ["행크", "프론티어", "스카이워크", "에이스", "윈디"],
       "stalker": ["미드나잇", "포커스", "텐션", "실루엣", "나이트러너"],
-      "closer": ["파이널 스퍼트", "허리케인", "브레이크어웨이", "라스트샷", "돌풍"],
-      "free": ["크로스로드", "플렉스", "아틀라스", "크리에이티브", "프리폴"]
+      "closer": ["파이널 스퍼트", "허리케인", "브레이크어웨이", "라스트샷", "돌풍"]
     }
   }
 }
