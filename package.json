@@ -10,6 +10,10 @@
     "format": "npm run format --prefix frontend",
     "functions:build": "npm run build --prefix functions",
     "emulators": "npm run functions:build && firebase emulators:start",
+    "deploy": "npm run build --prefix frontend && firebase deploy",
+    "deploy:hosting": "npm run build --prefix frontend && firebase deploy --only hosting",
+    "deploy:functions": "firebase deploy --only functions",
+    "deploy:all": "npm run build --prefix frontend && firebase deploy",
     "prepare": "husky"
   },
   "devDependencies": {

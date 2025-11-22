@@ -6,12 +6,16 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore'
 import { HttpsError } from 'firebase-functions/v2/https'
 import type { Room, Player, RoomStatus } from './types'
 
-const db = getFirestore()
+// Lazy initialization to avoid issues with module loading order
+function getDb() {
+  return getFirestore()
+}
 
 /**
  * 룸 존재 여부 확인
  */
 export async function getRoom(roomId: string): Promise<Room> {
+  const db = getDb()
   const roomRef = db.collection('rooms').doc(roomId)
   const roomDoc = await roomRef.get()
 
@@ -29,6 +33,7 @@ export async function getPlayer(
   roomId: string,
   playerId: string,
 ): Promise<Player | null> {
+  const db = getDb()
   const playerRef = db.collection('rooms').doc(roomId).collection('players').doc(playerId)
   const playerDoc = await playerRef.get()
 
@@ -43,6 +48,7 @@ export async function getPlayer(
  * 룸의 모든 플레이어 가져오기
  */
 export async function getAllPlayers(roomId: string): Promise<Player[]> {
+  const db = getDb()
   const playersSnapshot = await db
     .collection('rooms')
     .doc(roomId)
@@ -59,6 +65,7 @@ export async function updateRoomStatus(
   roomId: string,
   status: RoomStatus,
 ): Promise<void> {
+  const db = getDb()
   const roomRef = db.collection('rooms').doc(roomId)
   await roomRef.update({
     status,
@@ -70,6 +77,7 @@ export async function updateRoomStatus(
  * 플레이어 수 확인
  */
 export async function getPlayerCount(roomId: string): Promise<number> {
+  const db = getDb()
   const playersSnapshot = await db
     .collection('rooms')
     .doc(roomId)
@@ -118,5 +126,33 @@ export async function areAllPlayersReady(roomId: string): Promise<boolean> {
   }
 
   return players.every((player) => player.isReady)
+}
+
+/**
+ * 초기 능력치 생성
+ * speed: 60-120, stamina: 60-120, condition: 40-100, jockeySkill: 50-100
+ */
+export function generateInitialStats(): {
+  speed: number
+  stamina: number
+  condition: number
+  jockeySkill: number
+} {
+  return {
+    speed: Math.floor(Math.random() * 61) + 60, // 60-120
+    stamina: Math.floor(Math.random() * 61) + 60, // 60-120
+    condition: Math.floor(Math.random() * 61) + 40, // 40-100
+    jockeySkill: Math.floor(Math.random() * 51) + 50, // 50-100
+  }
+}
+
+/**
+ * 랜덤 주행 습성 3개 선택
+ * 4가지 습성 중 3개를 랜덤으로 선택
+ */
+export function selectRandomRunStyles(): string[] {
+  const allStyles: string[] = ['paceSetter', 'frontRunner', 'stalker', 'closer']
+  const shuffled = [...allStyles].sort(() => Math.random() - 0.5)
+  return shuffled.slice(0, 3)
 }
 

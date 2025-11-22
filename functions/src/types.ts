@@ -50,6 +50,7 @@ export interface Player {
   isHost: boolean
   isReady: boolean
   runStyle?: RunStyleId
+  availableRunStyles?: RunStyleId[] // 게임 시작 시 제시된 주행 습성 3개
   selectedAugments: Array<{
     setIndex: number
     augmentId: string

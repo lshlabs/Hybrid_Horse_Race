@@ -1,80 +1,299 @@
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useRoom } from '../hooks/useRoom'
+import { joinRoom, setPlayerReady, startGame, leaveRoom } from '../lib/firebase-functions'
+import { getUserId } from '../lib/user-id'
+import type { RoomStatus } from '../hooks/useRoom'
 
-type PlayerStatus = 'ready' | 'waiting'
-
-interface PlayerTemplate {
-  id: string
-  index: number
-  role?: 'host'
-  initialStatus: PlayerStatus
-}
-
-interface Player {
-  id: string
-  index: number
-  role?: 'host'
-  status: PlayerStatus
-}
-
-const inviteCode = 'A4B1C9'
 const MAX_PLAYERS = 8
-const DEFAULT_PARTICIPANTS = 4
-
-const PLAYER_TEMPLATES: PlayerTemplate[] = [
-  { id: '1', index: 1, role: 'host', initialStatus: 'ready' },
-  { id: '2', index: 2, initialStatus: 'ready' },
-  { id: '3', index: 3, initialStatus: 'ready' },
-] as const
-
-// 개발 중 임시로 플레이어 2번이 현재 사용자
-const CURRENT_USER_INDEX = 2
 
 export function LobbyPage() {
   const { t } = useTranslation()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
+  
+  const roomId = searchParams.get('roomId')
+  const urlPlayerId = searchParams.get('playerId') // URL에서 playerId 가져오기
+  const userId = getUserId()
+  
+  const { room, players, loading, error } = useRoom(roomId)
+  const [isJoining, setIsJoining] = useState(false)
+  const [isTogglingReady, setIsTogglingReady] = useState(false)
+  const [isStarting, setIsStarting] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [playerId, setPlayerId] = useState<string | null>(null)
   const [isCopied, setIsCopied] = useState(false)
   const [isUrlVisible, setIsUrlVisible] = useState(false)
-  const [playerNames, setPlayerNames] = useState<Record<string, string>>({})
-  const [editingPlayerId, setEditingPlayerId] = useState<string | null>(null)
-  const [editNameValue, setEditNameValue] = useState('')
 
-  const participantTarget = (() => {
-    const param = parseInt(searchParams.get('participants') ?? '', 10)
-    if (Number.isNaN(param)) {
-      return DEFAULT_PARTICIPANTS
+  // URL에서 playerId 가져오기 (HorseSelectionPage에서 리다이렉트된 경우)
+  useEffect(() => {
+    if (urlPlayerId && !playerId) {
+      console.log('[LobbyPage] Setting playerId from URL:', urlPlayerId)
+      setPlayerId(urlPlayerId)
+    }
+  }, [urlPlayerId, playerId])
+
+  // 룸이 없으면 랜딩 페이지로 리다이렉트
+  useEffect(() => {
+    if (!roomId) {
+      navigate('/')
+      return
+    }
+  }, [roomId, navigate])
+
+  // 플레이어가 룸에 참가했는지 확인
+  useEffect(() => {
+    if (!roomId || !userId || loading) return
+
+    // 호스트인 경우
+    if (room?.hostId === userId) {
+      const hostPlayer = players.find((p) => p.isHost)
+      if (hostPlayer && !playerId) {
+        setPlayerId(userId) // 호스트의 playerId는 userId와 동일
+      }
+      return
     }
 
-    return Math.min(Math.max(param, 1), MAX_PLAYERS)
-  })()
+    // 일반 플레이어인 경우
+    // 1. URL에서 playerId 가져온 경우 (이미 참가한 플레이어)
+    if (urlPlayerId) {
+      const existingPlayer = players.find((p) => !p.isHost && p.id === urlPlayerId)
+      if (existingPlayer && !playerId) {
+        console.log('[LobbyPage] Setting playerId from URL:', urlPlayerId)
+        setPlayerId(urlPlayerId)
+        return
+      }
+    }
 
-  const inviteUrl = useMemo(() => `https://hybrid-horse-race.io/lobby/${inviteCode}`, [])
+    // 2. 상태에 playerId가 있는 경우 확인
+    if (playerId) {
+      const existingPlayer = players.find((p) => !p.isHost && p.id === playerId)
+      if (existingPlayer) {
+        // 이미 참가한 플레이어
+        return
+      }
+    }
 
-  const activeTemplates = useMemo(
-    () => PLAYER_TEMPLATES.slice(0, Math.min(participantTarget, PLAYER_TEMPLATES.length)),
-    [participantTarget],
-  )
+    // 3. players 배열에서 일반 플레이어 찾기 (이미 참가한 플레이어)
+    const foundPlayer = players.find((p) => !p.isHost)
+    if (foundPlayer && foundPlayer.id && !playerId) {
+      // 이미 참가한 플레이어 - playerId를 설정
+      console.log('[LobbyPage] Found existing player, setting playerId:', foundPlayer.id)
+      setPlayerId(foundPlayer.id)
+      return
+    }
 
-  const players = useMemo<Player[]>(
-    () =>
-      activeTemplates.map((template) => ({
-        id: template.id,
-        index: template.index,
-        role: template.role,
-        status: template.initialStatus,
-      })),
-    [activeTemplates],
-  )
+    // 4. 방 상태가 waiting이고, 아직 참가하지 않은 경우 joinRoom 호출
+    if (room?.status === 'waiting' && !isJoining && !playerId) {
+      const existingPlayer = players.find((p) => !p.isHost)
+      if (!existingPlayer) {
+        // 일반 플레이어가 없으면 참가 시도
+        console.log('[LobbyPage] Calling joinRoom - no existing player found')
+        handleJoinRoom()
+      }
+    }
+  }, [roomId, userId, players, room, loading, isJoining, playerId, urlPlayerId])
 
-  const readyCount = players.filter((player) => player.status === 'ready').length
-  const isAllReady = readyCount === players.length && players.length > 0
+  // 현재 사용자 찾기
+  const currentPlayer = useMemo(() => {
+    if (!room || !userId) return null
+    
+    // 호스트인 경우
+    if (room.hostId === userId) {
+      return players.find((p) => p.isHost) || null
+    }
+    
+    // 일반 플레이어인 경우 (playerId로 찾기)
+    // playerId는 Firestore 문서 ID이므로 id 필드와 비교
+    if (playerId) {
+      return players.find((p) => p.id === playerId) || null
+    }
+    
+    return null
+  }, [room, userId, players, playerId])
 
-  const emptySlotCount = Math.max(participantTarget - players.length, 0)
-  const emptySlots = Array.from({ length: emptySlotCount })
+  const isCurrentUserHost = room?.hostId === userId
+
+  // 룸 상태에 따라 자동 리다이렉트
+  useEffect(() => {
+    if (!room || !roomId || loading) return
+
+    const status = room.status as RoomStatus
+    if (status === 'runStyleSelection') {
+      const isHost = room.hostId === userId
+      
+      // 호스트인 경우 즉시 리다이렉트
+      if (isHost) {
+        const params = new URLSearchParams({ roomId })
+        navigate(`/horse-selection?${params.toString()}`)
+        return
+      }
+      
+      // 일반 플레이어인 경우 playerId가 있어야 함
+      // playerId가 없으면 players 배열에서 찾기
+      let actualPlayerId = playerId
+      
+      if (!actualPlayerId) {
+        // players 배열에서 일반 플레이어 찾기
+        const foundPlayer = players.find((p) => !p.isHost)
+        if (foundPlayer && foundPlayer.id) {
+          actualPlayerId = foundPlayer.id
+          // playerId 설정 (다음 렌더링을 위해)
+          setPlayerId(foundPlayer.id)
+          console.log('[LobbyPage] Setting playerId before redirect:', actualPlayerId)
+        }
+      }
+      
+      // playerId가 있으면 리다이렉트
+      if (actualPlayerId) {
+        const params = new URLSearchParams({ roomId })
+        params.set('playerId', actualPlayerId)
+        console.log('[LobbyPage] Redirecting to HorseSelectionPage with playerId:', actualPlayerId)
+        navigate(`/horse-selection?${params.toString()}`)
+      } else {
+        console.warn('[LobbyPage] Cannot redirect: playerId not found', {
+          playerId,
+          playersCount: players.length,
+          players: players.map(p => ({ id: p.id, isHost: p.isHost })),
+        })
+      }
+    }
+  }, [room, roomId, playerId, userId, players, loading, navigate])
+
+  // 페이지 종료 시 자동으로 leaveRoom 호출
+  // 주의: 페이지 이동 시에는 호출하지 않음 (cleanup에서 호출하지 않음)
+  useEffect(() => {
+    if (!room || !roomId || !userId) return
+    
+    const isHost = room.hostId === userId
+    
+    // 호스트는 나가기 처리 안 함
+    if (isHost) {
+      return
+    }
+    
+    const handleBeforeUnload = async (e: BeforeUnloadEvent) => {
+      if (!roomId || !playerId || !userId) return
+      
+      // 일반 플레이어만 나가기 처리
+      // beforeunload 이벤트는 탭을 닫거나 페이지를 떠날 때만 발생
+      // 페이지 이동 시에는 발생하지 않음
+      
+      // 비동기 작업이지만 beforeunload에서는 완료를 보장할 수 없음
+      e.preventDefault()
+      e.returnValue = ''
+      
+      // leaveRoom 호출 (완료를 보장할 수 없지만 시도)
+      // sendBeacon API를 사용하면 더 안전하지만, 여기서는 일반 fetch 사용
+      try {
+        await leaveRoom({
+          roomId,
+          playerId,
+        })
+        console.log('[LobbyPage] Player left room on page unload:', playerId)
+      } catch (error) {
+        console.error('[LobbyPage] Failed to leave room on page unload:', error)
+      }
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      // 컴포넌트 언마운트 시에는 leaveRoom을 호출하지 않음
+      // 페이지 이동 시 cleanup이 실행되지만, 실제로 탭을 닫는 것이 아니므로
+      // leaveRoom을 호출하면 안 됨
+    }
+  }, [roomId, playerId, userId, room])
+
+  // 모든 플레이어가 준비되었는지 확인
+  const isAllReady = useMemo(() => {
+    if (!players || players.length < 2) return false
+    return players.every((p) => p.isReady)
+  }, [players])
+
+  // 초대 URL 생성
+  const inviteUrl = useMemo(() => {
+    if (!roomId) return ''
+    const baseUrl = window.location.origin
+    return `${baseUrl}/lobby?roomId=${roomId}`
+  }, [roomId])
+
+  // 플레이어 참가
+  const handleJoinRoom = async () => {
+    if (!roomId || isJoining) return
+
+    setIsJoining(true)
+    setErrorMessage(null)
+
+    try {
+      const playerName = `Player ${Date.now() % 10000}`
+      const result = await joinRoom({
+        roomId,
+        playerName,
+      })
+
+      setPlayerId(result.data.playerId)
+    } catch (err: any) {
+      console.error('Failed to join room:', err)
+      setErrorMessage(err.message || '룸 참가에 실패했습니다.')
+      setIsJoining(false)
+    }
+  }
+
+  // 준비 상태 토글
+  const handleToggleReady = async () => {
+    if (!roomId || isTogglingReady) return
+    
+    // playerId가 없으면 currentPlayer에서 가져오기
+    const actualPlayerId = playerId || currentPlayer?.id || (isCurrentUserHost ? userId : null)
+    if (!actualPlayerId) {
+      setErrorMessage('플레이어 정보를 찾을 수 없습니다.')
+      return
+    }
+
+    setIsTogglingReady(true)
+    setErrorMessage(null)
+
+    try {
+      const currentReady = currentPlayer?.isReady ?? false
+      await setPlayerReady({
+        roomId,
+        playerId: actualPlayerId, // 호스트는 userId, 일반 플레이어는 playerId (Firestore 문서 ID)
+        isReady: !currentReady,
+      })
+    } catch (err: any) {
+      console.error('Failed to toggle ready status:', err)
+      setErrorMessage(err.message || '준비 상태 변경에 실패했습니다.')
+    } finally {
+      setIsTogglingReady(false)
+    }
+  }
+
+  // 게임 시작
+  const handleStart = async () => {
+    if (!roomId || !userId || isStarting || !isAllReady) return
+
+    setIsStarting(true)
+    setErrorMessage(null)
+
+    try {
+      await startGame({
+        roomId,
+        playerId: userId,
+      })
+      // 성공하면 자동으로 HorseSelectionPage로 리다이렉트됨 (useEffect에서 처리)
+    } catch (err: any) {
+      console.error('Failed to start game:', err)
+      setErrorMessage(err.message || '게임 시작에 실패했습니다.')
+      setIsStarting(false)
+    }
+  }
 
   const handleCopy = async () => {
+    if (!inviteUrl) return
+
     try {
       await navigator.clipboard.writeText(inviteUrl)
       setIsCopied(true)
@@ -84,53 +303,35 @@ export function LobbyPage() {
     }
   }
 
-  const getPlayerName = (player: Player) => {
-    if (playerNames[player.id]) {
-      return playerNames[player.id]
-    }
-    return t('lobby.playerName', { index: player.index })
+  // 로딩 중
+  if (loading) {
+    return (
+      <div className="flex w-full flex-1 items-center justify-center">
+        <div className="text-center">
+          <p className="text-lg text-neutral-200">로딩 중...</p>
+        </div>
+      </div>
+    )
   }
 
-  const isCurrentUser = (player: Player) => player.index === CURRENT_USER_INDEX
-
-  // 현재 사용자가 호스트인지 확인
-  // 개발 단계: 플레이어 1번이 호스트이므로, 현재 사용자(플레이어 2번)는 호스트가 아님
-  // TODO: 실제 사용자 인증 후 호스트 여부 확인 로직으로 교체 필요
-  const isCurrentUserHost = players.some(
-    (player) => player.index === CURRENT_USER_INDEX && player.role === 'host',
-  )
-
-  // 개발 단계: 모든 사용자에게 '게임 시작' 버튼 표시
-  // TODO: 실제 배포 시 아래 변수를 false로 변경하거나 제거
-  const DEV_MODE_SHOW_START_BUTTON = true
-
-  const handleEditName = (player: Player) => {
-    setEditingPlayerId(player.id)
-    setEditNameValue(getPlayerName(player))
-  }
-
-  const handleSaveName = (playerId: string) => {
-    if (editNameValue.trim()) {
-      setPlayerNames((prev) => ({ ...prev, [playerId]: editNameValue.trim() }))
-    }
-    setEditingPlayerId(null)
-    setEditNameValue('')
-  }
-
-  const handleCancelEdit = () => {
-    setEditingPlayerId(null)
-    setEditNameValue('')
-  }
-
-  const handleStart = () => {
-    if (!isAllReady) return
-    const params = new URLSearchParams(searchParams)
-    params.delete('runStyle')
-    params.delete('horse')
-    navigate({
-      pathname: '/horse-selection',
-      search: `?${params.toString()}`,
-    })
+  // 에러
+  if (error || !room) {
+    return (
+      <div className="flex w-full flex-1 items-center justify-center">
+        <div className="w-full max-w-md rounded-3xl border border-red-500/40 bg-red-500/10 p-6 text-center">
+          <p className="text-lg text-red-400">
+            {error?.message || '룸을 찾을 수 없습니다.'}
+          </p>
+          <button
+            type="button"
+            onClick={() => navigate('/')}
+            className="mt-4 rounded-full bg-primary px-6 py-2 text-sm font-semibold text-primary-foreground"
+          >
+            홈으로 돌아가기
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -139,140 +340,124 @@ export function LobbyPage() {
         <header className="mb-6 text-center">
           <h1 className="mt-2 text-2xl font-display text-neutral-50">{t('lobby.title')}</h1>
           <p className="mt-2 text-xs text-neutral-400">{t('lobby.subtitle')}</p>
+          {room.title && <p className="mt-1 text-xs text-neutral-500">{room.title}</p>}
         </header>
 
+        {errorMessage && (
+          <div className="mb-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-400">
+            {errorMessage}
+          </div>
+        )}
+
         <ul className="space-y-3">
-          {players.map((player) => (
-            <li
-              key={player.id}
-              className="flex items-center gap-2 sm:gap-3 rounded-2xl bg-surface-muted/80 px-3 sm:px-4 py-3"
-            >
-              <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-lg text-neutral-300">
-                {player.index}
-              </div>
-              <div className="flex flex-1 min-w-0 items-center gap-1.5 sm:gap-2">
-                {editingPlayerId !== player.id && (
-                  <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-                    {player.role === 'host' && (
-                      <span className="rounded-full border border-primary/40 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-primary">
-                        {t('lobby.host')}
-                      </span>
-                    )}
-                    {isCurrentUser(player) && (
-                      <span className="rounded-full border border-accent/50 bg-accent/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-accent">
-                        {t('lobby.me', { defaultValue: '나' })}
-                      </span>
-                    )}
-                  </div>
-                )}
-                <div className="flex flex-1 min-w-0 items-center">
-                  {editingPlayerId === player.id ? (
-                    <div className="flex flex-1 min-w-0 items-center gap-1.5 sm:gap-2">
-                      <input
-                        type="text"
-                        value={editNameValue}
-                        onChange={(e) => setEditNameValue(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            handleSaveName(player.id)
-                          } else if (e.key === 'Escape') {
-                            handleCancelEdit()
-                          }
-                        }}
-                        className="flex-1 min-w-0 rounded-lg border border-primary/30 bg-background/80 px-2 sm:px-3 py-1.5 text-sm text-neutral-100 focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                        autoFocus
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleSaveName(player.id)}
-                        className="flex-shrink-0 rounded-lg bg-primary px-2 sm:px-3 py-1.5 text-xs font-semibold text-primary-foreground transition hover:bg-primary/80"
-                        aria-label="저장"
-                      >
-                        ✓
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleCancelEdit}
-                        className="flex-shrink-0 rounded-lg border border-white/20 bg-white/5 px-2 sm:px-3 py-1.5 text-xs font-semibold text-neutral-300 transition hover:bg-white/10"
-                        aria-label="취소"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center min-w-0">
-                      <p className="text-sm font-semibold text-neutral-100 truncate">
-                        {getPlayerName(player)}
-                      </p>
-                      {isCurrentUser(player) && (
-                        <button
-                          type="button"
-                          onClick={() => handleEditName(player)}
-                          className="ml-1 flex-shrink-0 text-neutral-400 transition hover:text-primary"
-                          aria-label="이름 편집"
-                        >
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            strokeWidth={1.5}
-                            stroke="currentColor"
-                            className="h-5 w-5"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10"
-                            />
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                  )}
+          {players.map((player, index) => {
+            const isCurrentUser = player.isHost
+              ? room.hostId === userId
+              : player.id === playerId || player.id === currentPlayer?.id
+
+            return (
+              <li
+                key={player.isHost ? 'host' : `player-${index}`}
+                className="flex items-center gap-2 sm:gap-3 rounded-2xl bg-surface-muted/80 px-3 sm:px-4 py-3"
+              >
+                <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-lg text-neutral-300">
+                  {index + 1}
                 </div>
-              </div>
-              {editingPlayerId !== player.id && (
+                <div className="flex flex-1 min-w-0 items-center gap-1.5 sm:gap-2">
+                  {player.isHost && (
+                    <span className="rounded-full border border-primary/40 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-primary flex-shrink-0">
+                      {t('lobby.host')}
+                    </span>
+                  )}
+                  {isCurrentUser && (
+                    <span className="rounded-full border border-accent/50 bg-accent/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-accent flex-shrink-0">
+                      {t('lobby.me', { defaultValue: '나' })}
+                    </span>
+                  )}
+                  <div className="flex flex-1 min-w-0 items-center">
+                    <p className="text-sm font-semibold text-neutral-100 truncate">
+                      {player.name || (player.isHost ? 'Host' : `Player ${index}`)}
+                    </p>
+                  </div>
+                </div>
                 <span
                   className={
-                    player.status === 'ready'
+                    player.isReady
                       ? 'inline-flex items-center gap-1 rounded-full border border-success/40 bg-success/10 px-2 py-0.5 text-[10px] text-success flex-shrink-0'
                       : 'inline-flex items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[10px] text-warning flex-shrink-0'
                   }
                 >
                   <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                  {player.status === 'ready' ? t('lobby.status.ready') : t('lobby.status.waiting')}
-                </span>
-              )}
-            </li>
-          ))}
-
-          {emptySlots.map((_, index) => {
-            const emptySlotIndex = players.length + index + 1
-            return (
-              <li
-                key={`empty-${index}`}
-                className="flex items-center gap-2 sm:gap-3 rounded-2xl bg-surface-muted/80 px-3 sm:px-4 py-3"
-              >
-                <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-lg text-neutral-300">
-                  {emptySlotIndex}
-                </div>
-                <div className="flex flex-1 min-w-0 items-center gap-1.5 sm:gap-2">
-                  <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0" />
-                  <div className="flex flex-1 min-w-0 items-center">
-                    <p className="text-sm font-semibold text-neutral-100 truncate">
-                      {t('lobby.playerName', { index: emptySlotIndex })}
-                    </p>
-                  </div>
-                </div>
-                <span className="inline-flex items-center gap-1 rounded-full border border-neutral-500/40 bg-neutral-500/10 px-2 py-0.5 text-[10px] text-neutral-400 flex-shrink-0">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                  {t('lobby.emptySlotStatus')}
+                  {player.isReady ? t('lobby.status.ready') : t('lobby.status.waiting')}
                 </span>
               </li>
             )
           })}
+
+          {/* 빈 슬롯 */}
+          {players.length < MAX_PLAYERS &&
+            Array.from({ length: MAX_PLAYERS - players.length }).map((_, index) => {
+              const emptySlotIndex = players.length + index + 1
+              return (
+                <li
+                  key={`empty-${index}`}
+                  className="flex items-center gap-2 sm:gap-3 rounded-2xl bg-surface-muted/80 px-3 sm:px-4 py-3"
+                >
+                  <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-lg text-neutral-300">
+                    {emptySlotIndex}
+                  </div>
+                  <div className="flex flex-1 min-w-0 items-center gap-1.5 sm:gap-2">
+                    <div className="flex flex-1 min-w-0 items-center">
+                      <p className="text-sm font-semibold text-neutral-100 truncate">
+                        {t('lobby.playerName', { index: emptySlotIndex })}
+                      </p>
+                    </div>
+                  </div>
+                  <span className="inline-flex items-center gap-1 rounded-full border border-neutral-500/40 bg-neutral-500/10 px-2 py-0.5 text-[10px] text-neutral-400 flex-shrink-0">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                    {t('lobby.emptySlotStatus')}
+                  </span>
+                </li>
+              )
+            })}
         </ul>
 
+        {/* 현재 사용자가 아직 참가하지 않은 경우 */}
+        {!currentPlayer && !isJoining && roomId && (
+          <div className="mt-6">
+            <button
+              type="button"
+              onClick={handleJoinRoom}
+              className="w-full rounded-full bg-primary px-8 py-3 text-base font-semibold text-primary-foreground shadow-neon transition hover:bg-primary/80"
+            >
+              룸 참가하기
+            </button>
+          </div>
+        )}
+
+        {/* 준비 버튼 */}
+        {currentPlayer && (
+          <div className="mt-6">
+            <button
+              type="button"
+              onClick={handleToggleReady}
+              disabled={isTogglingReady}
+              className={`w-full rounded-full px-8 py-3 text-base font-semibold transition ${
+                currentPlayer.isReady
+                  ? 'border border-success/40 bg-success/10 text-success hover:bg-success/20'
+                  : 'border border-warning/40 bg-warning/10 text-warning hover:bg-warning/20'
+              } disabled:cursor-not-allowed disabled:opacity-50`}
+            >
+              {isTogglingReady
+                ? '처리 중...'
+                : currentPlayer.isReady
+                  ? '준비 취소'
+                  : '준비하기'}
+            </button>
+          </div>
+        )}
+
+        {/* 초대 링크 */}
         <div className="mt-6 space-y-3 rounded-2xl border border-dashed border-white/15 bg-white/5 p-4">
           <p className="text-xs uppercase tracking-[0.35em] text-neutral-400">
             {t('lobby.invite')}
@@ -288,42 +473,7 @@ export function LobbyPage() {
                 className="flex-shrink-0 text-neutral-400 transition hover:text-neutral-200"
                 aria-label={isUrlVisible ? 'URL 숨기기' : 'URL 보이기'}
               >
-                {isUrlVisible ? (
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    strokeWidth={1.5}
-                    stroke="currentColor"
-                    className="h-5 w-5"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"
-                    />
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                    />
-                  </svg>
-                ) : (
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    strokeWidth={1.5}
-                    stroke="currentColor"
-                    className="h-5 w-5"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 01-4.243-4.243m4.242 4.242L9.88 9.88"
-                    />
-                  </svg>
-                )}
+                {isUrlVisible ? '👁️' : '👁️‍🗨️'}
               </button>
             </div>
             <button
@@ -332,76 +482,26 @@ export function LobbyPage() {
               className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-primary-foreground transition hover:bg-primary/80"
               aria-label="복사"
             >
-              {isCopied ? (
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  strokeWidth={2}
-                  stroke="currentColor"
-                  className="h-5 w-5"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-              ) : (
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  strokeWidth={1.5}
-                  stroke="currentColor"
-                  className="h-5 w-5"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184"
-                  />
-                </svg>
-              )}
+              {isCopied ? '✓' : '📋'}
             </button>
           </div>
         </div>
 
+        {/* 게임 시작 버튼 */}
         <div className="mt-6 flex flex-col gap-2">
-          {/* 개발 단계: DEV_MODE_SHOW_START_BUTTON이 true이면 모든 사용자에게 '로비 설정으로 돌아가기' 버튼 표시 */}
-          {/* TODO: 실제 배포 시 아래 조건을 isCurrentUserHost로 교체 */}
-          {DEV_MODE_SHOW_START_BUTTON || isCurrentUserHost ? (
+          {isCurrentUserHost && (
             <button
               type="button"
-              onClick={() => navigate('/')}
-              className="w-full rounded-full border border-white/20 bg-white/5 px-8 py-3 text-base font-semibold text-neutral-100 transition hover:border-white/30 hover:bg-white/10"
-            >
-              {t('lobby.backToLanding')}
-            </button>
-          ) : null}
-          {/* 개발 단계: DEV_MODE_SHOW_START_BUTTON이 true이면 모든 사용자에게 '게임 시작' 버튼 표시 */}
-          {/* TODO: 실제 배포 시 아래 조건을 isCurrentUserHost로 교체 */}
-          {DEV_MODE_SHOW_START_BUTTON || isCurrentUserHost ? (
-            <button
-              type="button"
-              disabled={!isAllReady}
               onClick={handleStart}
+              disabled={!isAllReady || isStarting || players.length < 2}
               className="w-full rounded-full border border-transparent bg-primary px-8 py-3 text-base font-semibold text-primary-foreground shadow-neon transition hover:bg-primary/80 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-neutral-400"
             >
-              {t('lobby.startGame')}
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled
-              className="w-full rounded-full bg-white/10 px-8 py-3 text-base font-semibold text-neutral-400"
-            >
-              {t('lobby.startGameWaiting')}
+              {isStarting ? '게임 시작 중...' : t('lobby.startGame')}
             </button>
           )}
-          {!isAllReady ? (
+          {!isAllReady && (
             <p className="text-center text-xs text-neutral-400">{t('lobby.startWaiting')}</p>
-          ) : null}
+          )}
         </div>
       </div>
     </div>
