@@ -617,6 +617,15 @@ import { RacePage } from './pages/RacePage'
    - 말 스프라이트 이미지
    - 트랙 배경 이미지
    - 애니메이션 (말 달리기, 승리 연출 등)
+   
+   **무료 에셋 소스:**
+   - [OpenGameArt.org](https://opengameart.org/) - "horse", "race", "top down" 검색
+   - [Kenney.nl](https://kenney.nl/) - 무료 게임 에셋 팩 (2D 탑뷰 타일셋 포함)
+   - [Itch.io](https://itch.io/game-assets/free) - 무료 게임 에셋 섹션
+   - [GameDev Market](https://www.gamedevmarket.net/category/2d/free/) - 무료 2D 에셋
+   - [Craftpix.net](https://craftpix.net/freebies/) - 무료 게임 그래픽
+   - [Pixabay](https://pixabay.com/) - 무료 이미지 (상업적 사용 가능)
+   - [Unsplash](https://unsplash.com/) - 고품질 무료 사진 (배경용)
 
 2. **고급 기능**
    - 주행 습성에 따른 AI 로직 구현
@@ -654,6 +663,139 @@ import { RacePage } from './pages/RacePage'
 
 **문제**: TypeScript 타입 에러
 **해결**: Phaser 타입 정의 확인 및 `as` 타입 단언 사용 (필요시)
+
+---
+
+## 9. 무료 에셋 소스 가이드
+
+### 9.1 추천 무료 에셋 사이트
+
+#### 1. **OpenGameArt.org** (가장 추천)
+- **URL**: https://opengameart.org/
+- **특징**: 
+  - 완전 무료, 상업적 사용 가능 (라이선스 확인 필요)
+  - 커뮤니티 기반, 다양한 스타일
+  - 검색 키워드: "horse", "race", "top down", "sprite"
+- **추천 검색어**: "horse sprite", "racing game", "top view"
+
+#### 2. **Kenney.nl**
+- **URL**: https://kenney.nl/
+- **특징**:
+  - 고품질 무료 에셋 팩
+  - 일관된 스타일
+  - 2D 탑뷰 타일셋 포함
+- **추천 팩**: "Racing Pack", "Topdown Shooter", "Tiny Dungeon"
+
+#### 3. **Itch.io**
+- **URL**: https://itch.io/game-assets/free
+- **특징**:
+  - 인디 개발자들이 공유하는 에셋
+  - "name-your-price" (무료 가능)
+  - 다양한 스타일
+- **검색 키워드**: "horse", "racing", "top down", "2D sprite"
+
+#### 4. **GameDev Market**
+- **URL**: https://www.gamedevmarket.net/category/2d/free/
+- **특징**:
+  - 무료 및 유료 에셋 혼합
+  - 고품질 에셋
+  - 필터로 무료만 검색 가능
+
+#### 5. **Craftpix.net**
+- **URL**: https://craftpix.net/freebies/
+- **특징**:
+  - 정기적으로 무료 에셋 제공
+  - 2D 게임 그래픽 전문
+  - 이메일 구독 시 추가 무료 에셋
+
+### 9.2 경마 게임에 특화된 검색 키워드
+
+다음 키워드로 검색하면 관련 에셋을 찾을 수 있습니다:
+
+**영어 키워드:**
+- `horse sprite`
+- `horse racing`
+- `top down horse`
+- `race track`
+- `racing game assets`
+- `2D horse animation`
+- `isometric horse`
+- `pixel art horse`
+
+**한국어 키워드:**
+- 일부 사이트에서 한국어 검색 지원
+- 주로 영어 키워드 사용 권장
+
+### 9.3 에셋 사용 시 주의사항
+
+1. **라이선스 확인 필수**
+   - CC0 (Public Domain): 자유롭게 사용 가능
+   - CC BY: 저작자 표시 필요
+   - CC BY-SA: 저작자 표시 + 동일 라이선스
+   - 상업적 사용 가능 여부 확인
+
+2. **에셋 크기 및 형식**
+   - Phaser 3 권장: PNG (투명 배경)
+   - 스프라이트 시트: JSON + PNG 조합
+   - 해상도: 32x32, 64x64, 128x128 등 (게임 스타일에 맞게)
+
+3. **에셋 최적화**
+   - 이미지 압축 (TinyPNG 등)
+   - 스프라이트 시트 생성 (TexturePacker 등)
+   - 불필요한 메타데이터 제거
+
+### 9.4 직접 제작 도구 (대안)
+
+에셋을 직접 만들고 싶다면:
+
+1. **픽셀 아트 도구**
+   - [Piskel](https://www.piskelapp.com/) - 웹 기반 무료 픽셀 아트 에디터
+   - [Aseprite](https://www.aseprite.org/) - 유료이지만 강력한 픽셀 아트 도구
+   - [GIMP](https://www.gimp.org/) - 무료 이미지 에디터
+
+2. **AI 이미지 생성**
+   - [DALL-E](https://openai.com/dall-e-2) - OpenAI의 이미지 생성 AI
+   - [Midjourney](https://www.midjourney.com/) - 고품질 이미지 생성
+   - [Stable Diffusion](https://stablediffusionweb.com/) - 오픈소스 AI 이미지 생성
+
+### 9.5 프로젝트에 에셋 추가하기
+
+에셋을 다운로드한 후:
+
+1. **디렉토리 구조**
+   ```
+   frontend/src/assets/
+   ├── images/
+   │   ├── horses/
+   │   │   ├── horse1.png
+   │   │   └── horse2.png
+   │   ├── track/
+   │   │   └── track.png
+   │   └── ui/
+   └── spritesheets/
+       └── horse-animations.json
+   ```
+
+2. **Phaser에서 로드**
+   ```typescript
+   // PreloadScene.ts 또는 RaceScene.ts
+   preload() {
+     this.load.image('horse', 'assets/images/horses/horse1.png')
+     this.load.image('track', 'assets/images/track/track.png')
+     this.load.spritesheet('horse-run', 'assets/spritesheets/horse-run.png', {
+       frameWidth: 64,
+       frameHeight: 64,
+     })
+   }
+   ```
+
+3. **Vite 설정 (필요시)**
+   ```typescript
+   // vite.config.ts
+   export default defineConfig({
+     assetsInclude: ['**/*.png', '**/*.jpg', '**/*.json'],
+   })
+   ```
 
 ---
 
