@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { createRoom } from '../lib/firebase-functions'
+import { getUserId } from '../lib/user-id'
 
 const MIN_SET_COUNT = 1
 const MAX_SET_COUNT = 5
@@ -11,25 +13,28 @@ const MAX_PARTICIPANT_COUNT = 8
 const MIN_REROLL_COUNT = 0
 const MAX_REROLL_COUNT = 5
 
-const inviteCode = 'A4B1C9'
-
 export function LandingPage() {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const [setCount, setSetCount] = useState(3)
   const [participantCount, setParticipantCount] = useState(4)
   const [rerollCount, setRerollCount] = useState(2)
   const [isCopied, setIsCopied] = useState(false)
   const [isUrlVisible, setIsUrlVisible] = useState(false)
+  const [isCreating, setIsCreating] = useState(false)
+  const [roomId, setRoomId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  const inviteUrl = useMemo(() => `https://hybrid-horse-race.io/lobby/${inviteCode}`, [])
+  const inviteUrl = useMemo(() => {
+    if (!roomId) return ''
+    const baseUrl = window.location.origin
+    return `${baseUrl}/lobby?roomId=${roomId}`
+  }, [roomId])
+  
   const lobbyLink = useMemo(() => {
-    const params = new URLSearchParams({
-      participants: participantCount.toString(),
-      sets: setCount.toString(),
-      reroll: rerollCount.toString(),
-    })
-    return `/lobby?${params.toString()}`
-  }, [participantCount, rerollCount, setCount])
+    if (!roomId) return '/lobby'
+    return `/lobby?roomId=${roomId}`
+  }, [roomId])
 
   const decrease = () => setSetCount((prev) => Math.max(prev - 1, MIN_SET_COUNT))
   const increase = () => setSetCount((prev) => Math.min(prev + 1, MAX_SET_COUNT))
@@ -40,7 +45,57 @@ export function LandingPage() {
   const decreaseReroll = () => setRerollCount((prev) => Math.max(prev - 1, MIN_REROLL_COUNT))
   const increaseReroll = () => setRerollCount((prev) => Math.min(prev + 1, MAX_REROLL_COUNT))
 
+  const handleCreateRoom = async () => {
+    if (isCreating) return
+    
+    setIsCreating(true)
+    setError(null)
+    
+    try {
+      const hostId = getUserId()
+      const title = `Room ${new Date().toLocaleTimeString()}`
+      
+      console.log('Creating room with:', { hostId, title, setCount, rerollLimit: rerollCount })
+      
+      const result = await createRoom({
+        hostId,
+        title,
+        setCount,
+        rerollLimit: rerollCount,
+      })
+      
+      console.log('Room created successfully:', result.data)
+      
+      const newRoomId = result.data.roomId
+      setRoomId(newRoomId)
+      
+      // 룸 생성 후 바로 로비로 이동 (roomId를 직접 사용)
+      console.log('Navigating to lobby with roomId:', newRoomId)
+      navigate(`/lobby?roomId=${newRoomId}`)
+    } catch (err: any) {
+      console.error('Failed to create room:', err)
+      console.error('Error details:', {
+        code: err.code,
+        message: err.message,
+        details: err.details,
+        stack: err.stack,
+      })
+      
+      // 더 자세한 에러 메시지 표시
+      let errorMessage = '룸 생성에 실패했습니다.'
+      if (err.message) {
+        errorMessage += ` (${err.message})`
+      } else if (err.code) {
+        errorMessage += ` (코드: ${err.code})`
+      }
+      setError(errorMessage)
+      setIsCreating(false)
+    }
+  }
+
   const handleCopy = async () => {
+    if (!inviteUrl) return
+    
     try {
       await navigator.clipboard.writeText(inviteUrl)
       setIsCopied(true)
@@ -176,15 +231,22 @@ export function LandingPage() {
             </div>
           </div>
 
-          <div className="space-y-3 rounded-2xl border border-dashed border-white/15 bg-white/5 p-5">
-            <p className="text-xs uppercase tracking-[0.35em] text-neutral-400">
-              {t('invite.title')}
-            </p>
-            <div className="flex gap-2">
-              <div className="flex flex-1 items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-background/80 px-4 py-3 text-sm text-neutral-200">
-                <span className="block flex-1 truncate">
-                  {isUrlVisible ? inviteUrl : '••••••••••••••••••••••••••••••••'}
-                </span>
+          {error && (
+            <div className="rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+              {error}
+            </div>
+          )}
+
+          {roomId && (
+            <div className="space-y-3 rounded-2xl border border-dashed border-white/15 bg-white/5 p-5">
+              <p className="text-xs uppercase tracking-[0.35em] text-neutral-400">
+                {t('invite.title')}
+              </p>
+              <div className="flex gap-2">
+                <div className="flex flex-1 items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-background/80 px-4 py-3 text-sm text-neutral-200">
+                  <span className="block flex-1 truncate">
+                    {isUrlVisible ? inviteUrl : '••••••••••••••••••••••••••••••••'}
+                  </span>
                 <button
                   type="button"
                   onClick={() => setIsUrlVisible(!isUrlVisible)}
@@ -228,13 +290,13 @@ export function LandingPage() {
                     </svg>
                   )}
                 </button>
-              </div>
-              <button
-                type="button"
-                onClick={handleCopy}
-                className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-primary-foreground transition hover:bg-primary/80"
-                aria-label="복사"
-              >
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-primary-foreground transition hover:bg-primary/80"
+                  aria-label="복사"
+                >
                 {isCopied ? (
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -267,16 +329,19 @@ export function LandingPage() {
                   </svg>
                 )}
               </button>
+              </div>
             </div>
-          </div>
+          )}
         </section>
-
-        <Link
-          to={lobbyLink}
-          className="mt-10 block rounded-full bg-primary px-8 py-3 text-center text-base font-semibold text-primary-foreground shadow-neon transition hover:bg-primary/80"
+        
+        <button
+          type="button"
+          onClick={handleCreateRoom}
+          disabled={isCreating}
+          className="mt-10 w-full rounded-full bg-primary px-8 py-3 text-center text-base font-semibold text-primary-foreground shadow-neon transition hover:bg-primary/80 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {t('navigation.toLobby')}
-        </Link>
+          {isCreating ? '룸 생성 중...' : t('navigation.toLobby')}
+        </button>
       </div>
     </div>
   )

@@ -8,9 +8,41 @@ dist
 .env.*
 !.env.example
 firebase-debug.log
+firestore-debug.log
 .runtimeconfig.json
+
+# Functions
 functions/lib
 functions/node_modules
+
+# Frontend
 frontend/node_modules
 frontend/dist
 
+# Test scripts
+*.sh
+
+# Documentation (test/guide docs only - keep main docs)
+docs/*-guide.md
+docs/*-troubleshooting.md
+docs/*-access.md
+docs/*-navigation.md
+docs/*-test.md
+docs/*-completion-summary.md
+docs/*-status.md
+docs/next-steps-guide.md
+docs/emulator-restart-guide.md
+docs/emulator-troubleshooting.md
+docs/emulator-ui-navigation.md
+docs/functions-ui-access.md
+docs/firebase-billing-guide.md
+docs/frontend-backend-integration-status.md
+docs/frontend-integration-test-guide.md
+docs/testing-guide.md
+docs/direct-function-test.md
+docs/phase1-completion-summary.md
+docs/phase2-completion-summary.md
+docs/hosting-guide.md
+
+firestore-debug.log
+*.sh
