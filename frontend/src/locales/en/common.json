@@ -81,5 +81,9 @@
       "stalker": ["Midnight", "Focus", "Tension", "Silhouette", "Night Runner"],
       "closer": ["Final Burst", "Hurricane", "Breakaway", "Last Shot", "Tempest"]
     }
+  },
+  "race": {
+    "skip": "Skip",
+    "viewResults": "View Results"
   }
 }

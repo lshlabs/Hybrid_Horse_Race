@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Phaser Game Test - 순수 Phaser 테스트</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        background-color: #1a1a2e;
+      }
+
+      #game {
+        /* Phaser 게임이 여기에 렌더링됨 */
+      }
+
+      canvas {
+        image-rendering: pixelated;
+        image-rendering: -moz-crisp-edges;
+        image-rendering: crisp-edges;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Phaser 게임이 여기에 렌더링됩니다 -->
+    <div id="game"></div>
+    <!-- main.ts를 직접 실행 -->
+    <script type="module" src="/src/components/game/main.ts"></script>
+  </body>
+</html>
+
