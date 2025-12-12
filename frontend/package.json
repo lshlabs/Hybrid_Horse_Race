@@ -12,7 +12,12 @@
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "sim": "npx tsx src/lib/run-sim.ts",
+    "sim:example": "npx tsx src/lib/race-sim-example.ts",
+    "sim:example1": "npx tsx -e \"import('./src/lib/race-sim-example.js').then(m => m.example1_BasicRace())\"",
+    "sim:example2": "npx tsx -e \"import('./src/lib/race-sim-example.js').then(m => m.example2_CustomHorses())\"",
+    "sim:example3": "npx tsx -e \"import('./src/lib/race-sim-example.js').then(m => m.example3_ExtremeStats())\""
   },
   "dependencies": {
     "clsx": "^2.1.1",

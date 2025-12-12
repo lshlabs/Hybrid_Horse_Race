@@ -3,7 +3,14 @@
  */
 
 import { useEffect, useState } from 'react'
-import { doc, onSnapshot, collection, query, orderBy, type FirestoreError } from 'firebase/firestore'
+import {
+  doc,
+  onSnapshot,
+  collection,
+  query,
+  orderBy,
+  type FirestoreError,
+} from 'firebase/firestore'
 import { getFirebaseDb } from '../lib/firebase'
 
 // 타입 정의 (functions/src/types.ts와 동일)
@@ -135,4 +142,3 @@ export function useRoom(roomId: string | null): UseRoomResult {
 
   return { room, players, loading, error }
 }
-

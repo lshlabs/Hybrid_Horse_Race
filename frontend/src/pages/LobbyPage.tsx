@@ -1,5 +1,5 @@
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useRoom } from '../hooks/useRoom'
 import { joinRoom, setPlayerReady, startGame, leaveRoom } from '../lib/firebase-functions'
@@ -12,11 +12,11 @@ export function LobbyPage() {
   const { t } = useTranslation()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
-  
+
   const roomId = searchParams.get('roomId')
   const urlPlayerId = searchParams.get('playerId') // URL에서 playerId 가져오기
   const userId = getUserId()
-  
+
   const { room, players, loading, error } = useRoom(roomId)
   const [isJoining, setIsJoining] = useState(false)
   const [isTogglingReady, setIsTogglingReady] = useState(false)
@@ -25,6 +25,29 @@ export function LobbyPage() {
   const [playerId, setPlayerId] = useState<string | null>(null)
   const [isCopied, setIsCopied] = useState(false)
   const [isUrlVisible, setIsUrlVisible] = useState(false)
+
+  // 플레이어 참가
+  const handleJoinRoom = useCallback(async () => {
+    if (!roomId || isJoining) return
+
+    setIsJoining(true)
+    setErrorMessage(null)
+
+    try {
+      const playerName = `Player ${Date.now() % 10000}`
+      const result = await joinRoom({
+        roomId,
+        playerName,
+      })
+
+      setPlayerId(result.data.playerId)
+    } catch (err) {
+      console.error('Failed to join room:', err)
+      const errorMessage = err instanceof Error ? err.message : '룸 참가에 실패했습니다.'
+      setErrorMessage(errorMessage)
+      setIsJoining(false)
+    }
+  }, [roomId, isJoining])
 
   // URL에서 playerId 가져오기 (HorseSelectionPage에서 리다이렉트된 경우)
   useEffect(() => {
@@ -93,23 +116,23 @@ export function LobbyPage() {
         handleJoinRoom()
       }
     }
-  }, [roomId, userId, players, room, loading, isJoining, playerId, urlPlayerId])
+  }, [roomId, userId, players, room, loading, isJoining, playerId, urlPlayerId, handleJoinRoom])
 
   // 현재 사용자 찾기
   const currentPlayer = useMemo(() => {
     if (!room || !userId) return null
-    
+
     // 호스트인 경우
     if (room.hostId === userId) {
       return players.find((p) => p.isHost) || null
     }
-    
+
     // 일반 플레이어인 경우 (playerId로 찾기)
     // playerId는 Firestore 문서 ID이므로 id 필드와 비교
     if (playerId) {
       return players.find((p) => p.id === playerId) || null
     }
-    
+
     return null
   }, [room, userId, players, playerId])
 
@@ -122,18 +145,18 @@ export function LobbyPage() {
     const status = room.status as RoomStatus
     if (status === 'runStyleSelection') {
       const isHost = room.hostId === userId
-      
+
       // 호스트인 경우 즉시 리다이렉트
       if (isHost) {
         const params = new URLSearchParams({ roomId })
         navigate(`/horse-selection?${params.toString()}`)
         return
       }
-      
+
       // 일반 플레이어인 경우 playerId가 있어야 함
       // playerId가 없으면 players 배열에서 찾기
       let actualPlayerId = playerId
-      
+
       if (!actualPlayerId) {
         // players 배열에서 일반 플레이어 찾기
         const foundPlayer = players.find((p) => !p.isHost)
@@ -144,7 +167,7 @@ export function LobbyPage() {
           console.log('[LobbyPage] Setting playerId before redirect:', actualPlayerId)
         }
       }
-      
+
       // playerId가 있으면 리다이렉트
       if (actualPlayerId) {
         const params = new URLSearchParams({ roomId })
@@ -155,7 +178,7 @@ export function LobbyPage() {
         console.warn('[LobbyPage] Cannot redirect: playerId not found', {
           playerId,
           playersCount: players.length,
-          players: players.map(p => ({ id: p.id, isHost: p.isHost })),
+          players: players.map((p) => ({ id: p.id, isHost: p.isHost })),
         })
       }
     }
@@ -165,25 +188,25 @@ export function LobbyPage() {
   // 주의: 페이지 이동 시에는 호출하지 않음 (cleanup에서 호출하지 않음)
   useEffect(() => {
     if (!room || !roomId || !userId) return
-    
+
     const isHost = room.hostId === userId
-    
+
     // 호스트는 나가기 처리 안 함
     if (isHost) {
       return
     }
-    
+
     const handleBeforeUnload = async (e: BeforeUnloadEvent) => {
       if (!roomId || !playerId || !userId) return
-      
+
       // 일반 플레이어만 나가기 처리
       // beforeunload 이벤트는 탭을 닫거나 페이지를 떠날 때만 발생
       // 페이지 이동 시에는 발생하지 않음
-      
+
       // 비동기 작업이지만 beforeunload에서는 완료를 보장할 수 없음
       e.preventDefault()
       e.returnValue = ''
-      
+
       // leaveRoom 호출 (완료를 보장할 수 없지만 시도)
       // sendBeacon API를 사용하면 더 안전하지만, 여기서는 일반 fetch 사용
       try {
@@ -198,7 +221,7 @@ export function LobbyPage() {
     }
 
     window.addEventListener('beforeunload', handleBeforeUnload)
-    
+
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload)
       // 컴포넌트 언마운트 시에는 leaveRoom을 호출하지 않음
@@ -220,32 +243,10 @@ export function LobbyPage() {
     return `${baseUrl}/lobby?roomId=${roomId}`
   }, [roomId])
 
-  // 플레이어 참가
-  const handleJoinRoom = async () => {
-    if (!roomId || isJoining) return
-
-    setIsJoining(true)
-    setErrorMessage(null)
-
-    try {
-      const playerName = `Player ${Date.now() % 10000}`
-      const result = await joinRoom({
-        roomId,
-        playerName,
-      })
-
-      setPlayerId(result.data.playerId)
-    } catch (err: any) {
-      console.error('Failed to join room:', err)
-      setErrorMessage(err.message || '룸 참가에 실패했습니다.')
-      setIsJoining(false)
-    }
-  }
-
   // 준비 상태 토글
   const handleToggleReady = async () => {
     if (!roomId || isTogglingReady) return
-    
+
     // playerId가 없으면 currentPlayer에서 가져오기
     const actualPlayerId = playerId || currentPlayer?.id || (isCurrentUserHost ? userId : null)
     if (!actualPlayerId) {
@@ -263,9 +264,10 @@ export function LobbyPage() {
         playerId: actualPlayerId, // 호스트는 userId, 일반 플레이어는 playerId (Firestore 문서 ID)
         isReady: !currentReady,
       })
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to toggle ready status:', err)
-      setErrorMessage(err.message || '준비 상태 변경에 실패했습니다.')
+      const errorMessage = err instanceof Error ? err.message : '준비 상태 변경에 실패했습니다.'
+      setErrorMessage(errorMessage)
     } finally {
       setIsTogglingReady(false)
     }
@@ -284,9 +286,10 @@ export function LobbyPage() {
         playerId: userId,
       })
       // 성공하면 자동으로 HorseSelectionPage로 리다이렉트됨 (useEffect에서 처리)
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to start game:', err)
-      setErrorMessage(err.message || '게임 시작에 실패했습니다.')
+      const errorMessage = err instanceof Error ? err.message : '게임 시작에 실패했습니다.'
+      setErrorMessage(errorMessage)
       setIsStarting(false)
     }
   }
@@ -319,9 +322,7 @@ export function LobbyPage() {
     return (
       <div className="flex w-full flex-1 items-center justify-center">
         <div className="w-full max-w-md rounded-3xl border border-red-500/40 bg-red-500/10 p-6 text-center">
-          <p className="text-lg text-red-400">
-            {error?.message || '룸을 찾을 수 없습니다.'}
-          </p>
+          <p className="text-lg text-red-400">{error?.message || '룸을 찾을 수 없습니다.'}</p>
           <button
             type="button"
             onClick={() => navigate('/')}
@@ -448,11 +449,7 @@ export function LobbyPage() {
                   : 'border border-warning/40 bg-warning/10 text-warning hover:bg-warning/20'
               } disabled:cursor-not-allowed disabled:opacity-50`}
             >
-              {isTogglingReady
-                ? '처리 중...'
-                : currentPlayer.isReady
-                  ? '준비 취소'
-                  : '준비하기'}
+              {isTogglingReady ? '처리 중...' : currentPlayer.isReady ? '준비 취소' : '준비하기'}
             </button>
           </div>
         )}
