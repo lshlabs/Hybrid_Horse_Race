@@ -1,5 +1,8 @@
 import Phaser from 'phaser'
 
+/**
+ * MapManager 설정 정보
+ */
 export interface MapManagerConfig {
   scene: Phaser.Scene
   segmentCount: number
@@ -7,35 +10,48 @@ export interface MapManagerConfig {
   gameHeight: number
   mapTextureKey: string
   fenceTextureKey: string
-  margin?: number // 맵 양 끝에서의 간격 (기본값: gameWidth * 0.1)
+  /** 출발점의 여백 (기본값: totalMapWidth * 0.1) */
+  startMargin?: number
+  /** 도착점의 여백 (기본값: totalMapWidth * 0.1) */
+  finishMargin?: number
+  /** 출발점에서 도착점까지의 거리 (픽셀 단위, 설정하면 finishMargin 무시) */
+  raceDistance?: number
+  /** @deprecated margin 대신 startMargin과 finishMargin을 사용하세요 */
+  margin?: number
 }
 
 /**
- * 맵 관련 모든 로직을 관리하는 클래스
- * - 에셋을 반복하여 맵 구성
- * - 출발점, 도착점 배치
- * - 맵 길이 계산
- * - 출발점~도착점 500m로 맞춤
+ * 맵 관련 로직을 관리하는 클래스
+ * - 맵 이미지를 반복하여 트랙 생성
+ * - 출발점과 도착점에 깃발 배치
+ * - 맵 크기 및 위치 계산
  */
 export default class MapManager {
+  // 상수 정의
+  private static readonly STRIPE_HEIGHT_RATIO = 0.333 // 깃발 높이 비율 (화면 높이의 33.3%)
+  private static readonly STRIPE_Y_RATIO = 0.779 // 깃발 Y 위치 비율 (화면 높이의 77.9%)
+  private static readonly DEFAULT_MARGIN_RATIO = 0.1 // 기본 margin 비율 (맵 너비의 10%)
+  private static readonly FENCE_Y_OFFSET = -124 // 펜스 Y 오프셋 (픽셀)
+  private static readonly CHECKER_TILE_SIZE = 4 // 체크무늬 타일 크기 (픽셀)
+
   private scene: Phaser.Scene
   private track!: Phaser.GameObjects.TileSprite
   private fenceBottom!: Phaser.GameObjects.TileSprite
   private startStripe!: Phaser.GameObjects.Image
   private finishStripe!: Phaser.GameObjects.Image
-
   private segmentCount: number
   private scaleFactor: number
-  private totalMapWidth: number // 총 맵의 화면상 너비
-  private startWorldX!: number // 출발점 월드 X 좌표
-  private finishWorldX!: number // 도착점 월드 X 좌표
-  private finishXOnScreen!: number // 출발점 ~ 도착점 사이의 화면상 거리 (시뮬레이션 500m에 해당)
+  private totalMapWidth: number
+  private startWorldX!: number
+  private finishWorldX!: number
+  private finishXOnScreen!: number
+  private finishStripeOffset: number = 0
 
   constructor(config: MapManagerConfig) {
     this.scene = config.scene
     this.segmentCount = config.segmentCount
 
-    // 맵 텍스처 설정
+    // 맵 이미지 준비
     const texMap = this.scene.textures.get(config.mapTextureKey)
     texMap.setFilter(Phaser.Textures.FilterMode.NEAREST)
 
@@ -43,22 +59,17 @@ export default class MapManager {
     const srcW = imgMap.width
     const srcH = imgMap.height
 
+    // 이미지 크기 조절 비율 계산
     this.scaleFactor = config.gameHeight / srcH
-    const scale = this.scaleFactor
 
-    // 총 맵 길이 계산
-    // 5개 세그먼트를 연결한 총 맵 너비
-    // 각 세그먼트의 너비 = srcW * scale
-    // 총 맵 너비 = (srcW * scale) * segmentCount
+    // 트랙 생성
     const logicalWidth = srcW * this.segmentCount
-    this.totalMapWidth = logicalWidth * scale
-
-    // 트랙 생성 (에셋 반복하여 맵 구성)
     this.track = this.scene.add
       .tileSprite(0, 0, logicalWidth, srcH, config.mapTextureKey)
       .setOrigin(0, 0)
-      .setScale(scale, scale)
+      .setScale(this.scaleFactor, this.scaleFactor)
 
+    this.totalMapWidth = this.track.displayWidth
     this.scene.cameras.main.roundPixels = true
 
     // 펜스 생성
@@ -67,29 +78,35 @@ export default class MapManager {
 
     const fenceImg = fenceTex.getSourceImage() as HTMLImageElement
     const fenceH = fenceImg.height
-
     const fenceLocalY = srcH - fenceH
-    const fenceYBase = fenceLocalY * scale
-    const fenceYOffset = -124
-    const fenceY = fenceYBase + fenceYOffset
+    const fenceY = fenceLocalY * this.scaleFactor + MapManager.FENCE_Y_OFFSET
 
     this.fenceBottom = this.scene.add
       .tileSprite(0, fenceY, logicalWidth, fenceH, config.fenceTextureKey)
       .setOrigin(0, 0)
-      .setScale(scale, scale)
+      .setScale(this.scaleFactor, this.scaleFactor)
       .setDepth(18)
 
-    // 출발점, 도착점 배치
-    this.createStartFinishStripes(config.gameHeight, config.margin)
+    // 출발점과 도착점 깃발 배치
+    const startMargin = config.startMargin !== undefined ? config.startMargin : config.margin
+    const finishMargin = config.finishMargin !== undefined ? config.finishMargin : config.margin
+    this.createStartFinishStripes(config.gameHeight, startMargin, finishMargin, config.raceDistance)
   }
 
-  private createStartFinishStripes(gameHeight: number, margin?: number) {
-    // 체크 기둥 텍스처 생성
+  /**
+   * 출발선과 도착선에 줄무늬 깃발 생성 및 배치
+   */
+  private createStartFinishStripes(
+    gameHeight: number,
+    startMargin?: number,
+    finishMargin?: number,
+    raceDistance?: number,
+  ) {
+    // 체크무늬 깃발 이미지 생성
     const stripeWidth = 32
-    const stripeHeight = gameHeight * 0.333
-
+    const stripeHeight = gameHeight * MapManager.STRIPE_HEIGHT_RATIO
     const g = this.scene.make.graphics({ x: 0, y: 0 })
-    const tileSize = 4
+    const tileSize = MapManager.CHECKER_TILE_SIZE
     const white = 0xffffff
     const black = 0x000000
 
@@ -104,21 +121,23 @@ export default class MapManager {
     g.generateTexture('finishStripe', stripeWidth, stripeHeight)
     g.destroy()
 
-    const stripeY = gameHeight * 0.779
+    // 깃발 위치 계산 및 배치
+    const stripeY = gameHeight * MapManager.STRIPE_Y_RATIO
+    const defaultMargin = this.totalMapWidth * MapManager.DEFAULT_MARGIN_RATIO
+    const startMarginValue = startMargin !== undefined ? startMargin : defaultMargin
 
-    // margin 계산
-    const marginValue = margin ?? this.totalMapWidth * 0.1
+    this.startWorldX = startMarginValue
 
-    // 출발점: 맵 왼쪽 끝(0) + margin
-    this.startWorldX = marginValue
+    if (raceDistance !== undefined) {
+      this.finishXOnScreen = raceDistance
+    } else {
+      const finishMarginValue = finishMargin !== undefined ? finishMargin : defaultMargin
+      this.finishXOnScreen = this.totalMapWidth - startMarginValue - finishMarginValue
+    }
 
-    // 도착점: 맵 오른쪽 끝(totalMapWidth) - margin
-    this.finishWorldX = this.totalMapWidth - marginValue
+    this.finishWorldX = this.startWorldX + this.finishXOnScreen
 
-    // 출발점 ~ 도착점 사이의 화면상 거리 = 시뮬레이션 500m에 해당
-    this.finishXOnScreen = this.finishWorldX - this.startWorldX
-
-    // 스트라이프 배치
+    // 깃발 배치
     this.startStripe = this.scene.add
       .image(this.startWorldX, stripeY, 'finishStripe')
       .setOrigin(0.5, 1)
@@ -134,38 +153,36 @@ export default class MapManager {
     return this.scaleFactor
   }
 
-  getTotalMapWidth(): number {
-    return this.totalMapWidth
-  }
-
   getStartWorldX(): number {
     return this.startWorldX
-  }
-
-  getFinishWorldX(): number {
-    return this.finishWorldX
   }
 
   getFinishXOnScreen(): number {
     return this.finishXOnScreen
   }
 
-  updateScroll(raceDistance: number) {
-    const logicalOffset = raceDistance / this.scaleFactor
-    const offsetX = Math.round(logicalOffset)
+  // 사용되지 않는 메서드들 (향후 사용 가능성을 위해 유지)
+  // getTotalMapWidth(): number { return this.totalMapWidth }
+  // getFinishWorldX(): number { return this.finishWorldX }
+  // setFinishStripeOffset(offset: number) { this.finishStripeOffset = offset }
 
-    this.track.tilePositionX = offsetX
+  setTilePositionX(tilePositionX: number) {
+    this.track.tilePositionX = tilePositionX
     if (this.fenceBottom) {
-      this.fenceBottom.tilePositionX = offsetX
+      this.fenceBottom.tilePositionX = tilePositionX
     }
   }
 
+  /**
+   * 깃발 위치 업데이트 (스크롤에 따라 이동)
+   */
   updateStripePositions(raceDistance: number) {
     if (this.startStripe) {
       this.startStripe.x = this.startWorldX - raceDistance
     }
+
     if (this.finishStripe) {
-      this.finishStripe.x = this.finishWorldX - raceDistance
+      this.finishStripe.x = this.finishWorldX - raceDistance + this.finishStripeOffset
     }
   }
 }

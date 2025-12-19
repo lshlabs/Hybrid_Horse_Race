@@ -126,15 +126,14 @@ export default class HorseManager {
 
   private createHorseAnimations() {
     const RUN_FRAMES = [72, 73, 74, 75, 76, 77]
+    const HORSE_COUNT = 8
 
-    // 텍스처 필터 설정
-    for (let i = 1; i <= 8; i++) {
+    // 텍스처 필터 설정 및 애니메이션 생성
+    for (let i = 1; i <= HORSE_COUNT; i++) {
       const tex = this.scene.textures.get(`horse${i}`)
       tex.setFilter(Phaser.Textures.FilterMode.NEAREST)
-    }
 
-    // 달리기 애니메이션 생성
-    for (let i = 1; i <= 8; i++) {
+      // 달리기 애니메이션 생성
       this.scene.anims.create({
         key: `horse${i}_run_right`,
         frames: RUN_FRAMES.map((frameIndex) => ({
@@ -144,10 +143,8 @@ export default class HorseManager {
         frameRate: 12,
         repeat: -1,
       })
-    }
 
-    // 대기 애니메이션 생성
-    for (let i = 1; i <= 8; i++) {
+      // 대기 애니메이션 생성
       this.scene.anims.create({
         key: `horse${i}_waiting`,
         frames: this.scene.anims.generateFrameNumbers(`horse${i}`, {
@@ -161,108 +158,28 @@ export default class HorseManager {
     }
   }
 
+  // 말의 Y 위치 비율 (게임 높이 기준)
+  private static readonly HORSE_Y_RATIOS = [0.52, 0.565, 0.61, 0.655, 0.7, 0.745, 0.79, 0.835]
+
   private createHorses(gameHeight: number, startXOnScreen: number) {
     const horseScale = 2
 
-    const horseY1 = gameHeight * 0.52
-    const horseY2 = gameHeight * 0.565
-    const horseY3 = gameHeight * 0.61
-    const horseY4 = gameHeight * 0.655
-    const horseY5 = gameHeight * 0.7
-    const horseY6 = gameHeight * 0.745
-    const horseY7 = gameHeight * 0.79
-    const horseY8 = gameHeight * 0.835
+    const START_X_OFFSET = -40
+    const IDLE_TWEEN_DISTANCES = [100, 170, 140, 30, 110, 150, 130, 180]
+    const TWEEN_DURATIONS = [3000, 3200, 3800, 3400, 3600, 3800, 3500, 3200]
+    const BASE_DEPTH = 10
 
-    const horseConfigs = [
-      {
-        textureKey: 'horse1',
-        idleAnimKey: 'horse1_waiting',
-        runAnimKey: 'horse1_run_right',
-        startX: startXOnScreen - 40,
-        endX: startXOnScreen - 40 + 100,
-        y: horseY1,
-        scale: horseScale,
-        depth: 10,
-        tweenDuration: 3000,
-      },
-      {
-        textureKey: 'horse2',
-        idleAnimKey: 'horse2_waiting',
-        runAnimKey: 'horse2_run_right',
-        startX: startXOnScreen - 40,
-        endX: startXOnScreen - 40 + 170,
-        y: horseY2,
-        scale: horseScale,
-        depth: 11,
-        tweenDuration: 3200,
-      },
-      {
-        textureKey: 'horse3',
-        idleAnimKey: 'horse3_waiting',
-        runAnimKey: 'horse3_run_right',
-        startX: startXOnScreen - 40,
-        endX: startXOnScreen - 40 + 140,
-        y: horseY3,
-        scale: horseScale,
-        depth: 12,
-        tweenDuration: 3800,
-      },
-      {
-        textureKey: 'horse4',
-        idleAnimKey: 'horse4_waiting',
-        runAnimKey: 'horse4_run_right',
-        startX: startXOnScreen - 40,
-        endX: startXOnScreen - 40 + 30,
-        y: horseY4,
-        scale: horseScale,
-        depth: 13,
-        tweenDuration: 3400,
-      },
-      {
-        textureKey: 'horse5',
-        idleAnimKey: 'horse5_waiting',
-        runAnimKey: 'horse5_run_right',
-        startX: startXOnScreen - 40,
-        endX: startXOnScreen - 40 + 110,
-        y: horseY5,
-        scale: horseScale,
-        depth: 14,
-        tweenDuration: 3600,
-      },
-      {
-        textureKey: 'horse6',
-        idleAnimKey: 'horse6_waiting',
-        runAnimKey: 'horse6_run_right',
-        startX: startXOnScreen - 40,
-        endX: startXOnScreen - 40 + 150,
-        y: horseY6,
-        scale: horseScale,
-        depth: 15,
-        tweenDuration: 3800,
-      },
-      {
-        textureKey: 'horse7',
-        idleAnimKey: 'horse7_waiting',
-        runAnimKey: 'horse7_run_right',
-        startX: startXOnScreen - 40,
-        endX: startXOnScreen - 40 + 130,
-        y: horseY7,
-        scale: horseScale,
-        depth: 16,
-        tweenDuration: 3500,
-      },
-      {
-        textureKey: 'horse8',
-        idleAnimKey: 'horse8_waiting',
-        runAnimKey: 'horse8_run_right',
-        startX: startXOnScreen - 40,
-        endX: startXOnScreen - 40 + 180,
-        y: horseY8,
-        scale: horseScale,
-        depth: 17,
-        tweenDuration: 3200,
-      },
-    ]
+    const horseConfigs = HorseManager.HORSE_Y_RATIOS.map((ratio, index) => ({
+      textureKey: `horse${index + 1}`,
+      idleAnimKey: `horse${index + 1}_waiting`,
+      runAnimKey: `horse${index + 1}_run_right`,
+      startX: startXOnScreen + START_X_OFFSET,
+      endX: startXOnScreen + START_X_OFFSET + IDLE_TWEEN_DISTANCES[index],
+      y: gameHeight * ratio,
+      scale: horseScale,
+      depth: BASE_DEPTH + index,
+      tweenDuration: TWEEN_DURATIONS[index],
+    }))
 
     // 말 8마리 생성
     for (const config of horseConfigs) {
@@ -270,9 +187,11 @@ export default class HorseManager {
     }
   }
 
+  private static readonly HORSE_COUNT = 8
+
   private initializeSimHorses() {
     this.simHorses = []
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < HorseManager.HORSE_COUNT; i++) {
       const stats = generateRandomStats()
       const horseName = `Horse_${i + 1}`
       const simHorse = new Horse(horseName, stats)
@@ -286,19 +205,12 @@ export default class HorseManager {
     startXOnScreen: number,
     arrowTextureKey: string,
   ) {
-    const horseYPositions = [
-      this.scene.scale.height * 0.52,
-      this.scene.scale.height * 0.565,
-      this.scene.scale.height * 0.61,
-      this.scene.scale.height * 0.655,
-      this.scene.scale.height * 0.7,
-      this.scene.scale.height * 0.745,
-      this.scene.scale.height * 0.79,
-      this.scene.scale.height * 0.835,
-    ]
+    const START_X_OFFSET = -40
+    const INDICATOR_Y_OFFSET = -185
 
-    const indicatorX = startXOnScreen - 40
-    const indicatorY = horseYPositions[playerHorseIndex] - 110
+    const indicatorX = startXOnScreen + START_X_OFFSET
+    const indicatorY =
+      this.scene.scale.height * HorseManager.HORSE_Y_RATIOS[playerHorseIndex] + INDICATOR_Y_OFFSET
 
     this.playerIndicator = this.scene.add.image(indicatorX, indicatorY, arrowTextureKey)
     this.playerIndicator.setOrigin(0.5)

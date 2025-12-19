@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react'
 import Phaser from 'phaser'
 import RaceScene from './scenes/RaceScene'
+import AugmentSelectionScene from './scenes/AugmentSelectionScene'
+import RaceResultScene from './scenes/RaceResultScene'
 
 // PhaserGame 컴포넌트의 props 타입 정의
 interface PhaserGameProps {
@@ -30,10 +32,11 @@ export function PhaserGame({
       height: aspectRatioHeight, // Phaser 초기 높이 (실제 크기는 컨테이너에 맞춰 리사이즈됨)
       parent: containerRef.current, // 게임이 렌더링될 부모 요소
       backgroundColor: '#1a1a2e', // 배경색 (어두운 파란색)
-      scene: [RaceScene], // RaceScene 추가
+      scene: [RaceScene, AugmentSelectionScene, RaceResultScene], // RaceScene, AugmentSelectionScene, RaceResultScene 추가
       render: {
-        pixelArt: true, // 도트 느낌 유지
-        antialias: false, // 안티앨리어싱 끄기
+        pixelArt: true, // 도트 느낌 유지 (이미지용)
+        antialias: true, // 텍스트 선명도를 위해 안티앨리어싱 활성화
+        roundPixels: false, // 텍스트 선명도를 위해 픽셀 반올림 비활성화
       },
       scale: {
         mode: Phaser.Scale.RESIZE, // 부모 컨테이너 크기에 맞춰 리사이즈
