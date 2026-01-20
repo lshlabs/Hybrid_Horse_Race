@@ -2,18 +2,18 @@ import Phaser from 'phaser'
 import RaceScene from './scenes/RaceScene'
 
 const config: Phaser.Types.Core.GameConfig = {
-  type: Phaser.CANVAS, // 🔴 WebGL 말고 Canvas 강제
+  type: Phaser.CANVAS,
   parent: 'game',
-  width: 1280, // 게임 내부 해상도 = 실제 캔버스 크기
-  height: 720, // map1 높이(576)와 동일하게 맞춤
+  width: 1280,
+  height: 720,
   backgroundColor: '#000000',
   render: {
-    pixelArt: true,
-    antialias: false,
+    pixelArt: false, // 텍스트 선명도를 위해 false (배경은 개별적으로 NEAREST 필터 적용)
+    antialias: true,
     roundPixels: true,
   },
   scale: {
-    mode: Phaser.Scale.NONE, // 🔴 Phaser의 추가 스케일링 사용 안함
+    mode: Phaser.Scale.NONE,
   },
   scene: [RaceScene],
 }

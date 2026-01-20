@@ -3,18 +3,44 @@ import Phaser from 'phaser'
 import RaceScene from './scenes/RaceScene'
 import AugmentSelectionScene from './scenes/AugmentSelectionScene'
 import RaceResultScene from './scenes/RaceResultScene'
+import type { Room, Player } from '../../hooks/useRoom'
+
+// 개발 모드: 선택한 말 데이터 타입
+interface SelectedHorseData {
+  name: string
+  stats: {
+    Speed: number
+    Stamina: number
+    Power: number
+    Guts: number
+    Start: number
+    Consistency: number
+  }
+  totalStats: number
+  selectedAt: string
+}
 
 // PhaserGame 컴포넌트의 props 타입 정의
 interface PhaserGameProps {
-  aspectRatioWidth?: number // 게임 종횡비 너비 (비율 계산용, 실제 크기와 무관, 기본값: 1200)
-  aspectRatioHeight?: number // 게임 종횡비 높이 (비율 계산용, 실제 크기와 무관, 기본값: 800)
-  maintainAspectRatio?: boolean // 비율 유지 여부 (기본값: true)
+  aspectRatioWidth?: number // 게임 너비 (고정 크기, 기본값: 1280)
+  aspectRatioHeight?: number // 게임 높이 (고정 크기, 기본값: 720)
+  roomId?: string // Firebase 룸 ID
+  playerId?: string // 플레이어 ID
+  room?: Room // Firebase 룸 데이터
+  players?: Player[] // 플레이어 목록
+  userId?: string // 현재 사용자 ID
+  selectedHorse?: SelectedHorseData // 개발 모드: 선택한 말 데이터
 }
 
 export function PhaserGame({
-  aspectRatioWidth = 1200,
-  aspectRatioHeight = 800,
-  maintainAspectRatio = true,
+  aspectRatioWidth = 1280,
+  aspectRatioHeight = 720,
+  roomId,
+  playerId,
+  room,
+  players = [],
+  userId,
+  selectedHorse,
 }: PhaserGameProps) {
   // Phaser Game 인스턴스를 저장할 ref
   const gameRef = useRef<Phaser.Game | null>(null)
@@ -25,97 +51,99 @@ export function PhaserGame({
     // containerRef가 없거나 이미 게임이 생성되어 있으면 실행하지 않음
     if (!containerRef.current || gameRef.current) return
 
-    // Phaser Game 설정 객체
+    // Phaser Game 설정 객체 (test-phaser.html 설정 반영)
     const config: Phaser.Types.Core.GameConfig = {
-      type: Phaser.AUTO, // WebGL 또는 Canvas 자동 선택
-      width: aspectRatioWidth, // Phaser 초기 너비 (실제 크기는 컨테이너에 맞춰 리사이즈됨)
-      height: aspectRatioHeight, // Phaser 초기 높이 (실제 크기는 컨테이너에 맞춰 리사이즈됨)
+      type: Phaser.CANVAS, // Canvas 렌더러 강제 (WebGL은 antialias로 인해 배경이 흐릿해질 수 있음)
+      width: aspectRatioWidth, // Phaser 초기 너비 (고정 크기)
+      height: aspectRatioHeight, // Phaser 초기 높이 (고정 크기)
       parent: containerRef.current, // 게임이 렌더링될 부모 요소
-      backgroundColor: '#1a1a2e', // 배경색 (어두운 파란색)
+      backgroundColor: '#000000', // 배경색 (test-phaser.html과 동일)
       scene: [RaceScene, AugmentSelectionScene, RaceResultScene], // RaceScene, AugmentSelectionScene, RaceResultScene 추가
       render: {
-        pixelArt: true, // 도트 느낌 유지 (이미지용)
-        antialias: true, // 텍스트 선명도를 위해 안티앨리어싱 활성화
-        roundPixels: false, // 텍스트 선명도를 위해 픽셀 반올림 비활성화
+        pixelArt: false, // 텍스트 선명도를 위해 false (배경은 개별적으로 NEAREST 필터 적용)
+        antialias: true, // 텍스트 안티앨리어싱
+        roundPixels: true, // 정수 픽셀 위치 강제
       },
       scale: {
-        mode: Phaser.Scale.RESIZE, // 부모 컨테이너 크기에 맞춰 리사이즈
-        autoCenter: Phaser.Scale.CENTER_BOTH, // 중앙 정렬
-        width: aspectRatioWidth, // 비율 계산용
-        height: aspectRatioHeight, // 비율 계산용
+        mode: Phaser.Scale.NONE, // 고정 크기 (test-phaser.html과 동일)
       },
     }
 
     // Phaser Game 인스턴스 생성
     gameRef.current = new Phaser.Game(config)
 
-    // 게임 크기 조정 함수
-    const resizeGame = () => {
-      if (!gameRef.current || !containerRef.current) return
-
-      const container = containerRef.current
-      const containerWidth = container.clientWidth
-      const containerHeight = container.clientHeight
-
-      if (maintainAspectRatio) {
-        // 비율 유지하면서 컨테이너에 맞춤 (모든 화면 크기에서)
-        const gameAspectRatio = aspectRatioWidth / aspectRatioHeight
-        const containerAspectRatio = containerWidth / containerHeight
-
-        let newWidth: number
-        let newHeight: number
-
-        if (containerAspectRatio > gameAspectRatio) {
-          // 컨테이너가 더 넓으면 높이 기준
-          newHeight = containerHeight
-          newWidth = newHeight * gameAspectRatio
-        } else {
-          // 컨테이너가 더 높거나 같으면 너비 기준
-          newWidth = containerWidth
-          newHeight = newWidth / gameAspectRatio
-        }
-
-        gameRef.current.scale.resize(newWidth, newHeight)
-      } else {
-        // 비율 무시하고 컨테이너에 맞춤 (모든 화면 크기에서)
-        gameRef.current.scale.resize(containerWidth, containerHeight)
-      }
+    // 개발 모드에서 전역 변수로 접근 가능하도록 설정 (디버깅용)
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(window as any).__phaserGame = gameRef.current
+      console.log('[PhaserGame] Game instance created. Access via window.__phaserGame')
     }
 
-    // 초기 크기 설정
-    resizeGame()
-
-    // ResizeObserver로 컨테이너 크기 변경 감지 (더 정확함)
-    const resizeObserver = new ResizeObserver(() => {
-      resizeGame()
-    })
-
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current)
-    }
-
-    // window resize 이벤트도 함께 사용 (fallback)
-    window.addEventListener('resize', resizeGame)
-
-    // 컴포넌트가 언마운트될 때 게임 정리
+    // 컴포넌트 언마운트 시 정리
     return () => {
-      resizeObserver.disconnect()
-      window.removeEventListener('resize', resizeGame)
       if (gameRef.current) {
-        gameRef.current.destroy(true) // 게임 완전히 제거
+        gameRef.current.destroy(true)
         gameRef.current = null
+        // 개발 모드에서 전역 변수 정리
+        if (import.meta.env.DEV && '__phaserGame' in window) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const win = window as any
+          delete win.__phaserGame
+        }
       }
     }
-  }, [aspectRatioWidth, aspectRatioHeight, maintainAspectRatio]) // 의존성 배열
+  }, [aspectRatioWidth, aspectRatioHeight]) // 의존성 배열
 
-  // 게임이 렌더링될 div 반환 (반응형)
+  // roomId, playerId, room, players가 변경되면 RaceScene에 데이터 전달
+  useEffect(() => {
+    if (!gameRef.current) return
+
+    const raceScene = gameRef.current.scene.getScene('RaceScene') as RaceScene | null
+    if (raceScene) {
+      // Phaser Scene의 data 객체를 통해 데이터 전달
+      raceScene.data.set('roomId', roomId)
+      raceScene.data.set('playerId', playerId)
+      raceScene.data.set('room', room)
+      raceScene.data.set('players', players)
+      raceScene.data.set('userId', userId)
+
+      // 개발 모드: 선택한 말 데이터 전달
+      if (selectedHorse) {
+        raceScene.data.set('selectedHorse', selectedHorse)
+      }
+
+      // 커스텀 이벤트로도 전달 (RaceScene에서 구독 가능)
+      raceScene.events.emit('room-data-updated', {
+        roomId,
+        playerId,
+        room,
+        players,
+        userId,
+        selectedHorse,
+      })
+
+      // 개발 모드에서 로그 출력
+      if (import.meta.env.DEV) {
+        console.log('[PhaserGame] Data sent to RaceScene:', {
+          roomId,
+          playerId,
+          hasRoom: !!room,
+          playersCount: players.length,
+          userId,
+          hasSelectedHorse: !!selectedHorse,
+          selectedHorseName: selectedHorse?.name,
+        })
+      }
+    } else if (import.meta.env.DEV) {
+      console.warn('[PhaserGame] RaceScene not found. Scene may not be initialized yet.')
+    }
+  }, [roomId, playerId, room, players, userId, selectedHorse])
+
+  // 게임이 렌더링될 div 반환 (고정 크기, test-phaser.html과 동일)
   return (
-    <div className="flex items-center justify-center w-full h-full min-h-0">
-      <div
-        ref={containerRef}
-        className="w-full h-full min-h-0"
-        // CSS 제한 제거 - 크기는 JavaScript에서 완전히 제어
-      />
-    </div>
+    <div
+      ref={containerRef}
+      style={{ width: `${aspectRatioWidth}px`, height: `${aspectRatioHeight}px` }}
+    />
   )
 }

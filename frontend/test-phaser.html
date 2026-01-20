@@ -16,21 +16,13 @@
         background-color: #1a1a2e;
       }
 
-      #game {
-        /* Phaser 게임이 여기에 렌더링됨 */
-      }
-
       canvas {
-        image-rendering: pixelated;
-        image-rendering: -moz-crisp-edges;
-        image-rendering: crisp-edges;
+        image-rendering: auto;
       }
     </style>
   </head>
   <body>
-    <!-- Phaser 게임이 여기에 렌더링됩니다 -->
     <div id="game"></div>
-    <!-- main.ts를 직접 실행 -->
     <script type="module" src="/src/components/game/main.ts"></script>
   </body>
 </html>

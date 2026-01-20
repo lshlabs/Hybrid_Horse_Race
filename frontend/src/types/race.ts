@@ -1,10 +1,9 @@
-import type { Stats } from '../lib/race-sim'
-import type { RunStyleId } from '../data/runStyles'
+import type { Stats } from '../engine/race'
 
 // 기존 HorseStats는 race-sim.ts의 Stats 타입으로 교체
 // RunStyle은 별도로 관리 (능력치와 분리)
 export interface HorseStats extends Stats {
-  runStyle?: RunStyleId // 선택적 필드로 유지 (향후 확장용)
+  runStyle?: string // 선택적 필드로 유지 (향후 확장용)
 }
 
 export interface HorseData {

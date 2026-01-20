@@ -120,7 +120,9 @@ export function LobbyPage() {
 
   // 현재 사용자 찾기
   const currentPlayer = useMemo(() => {
-    if (!room || !userId) return null
+    if (!room || !userId) {
+      return null
+    }
 
     // 호스트인 경우
     if (room.hostId === userId) {
@@ -130,7 +132,7 @@ export function LobbyPage() {
     // 일반 플레이어인 경우 (playerId로 찾기)
     // playerId는 Firestore 문서 ID이므로 id 필드와 비교
     if (playerId) {
-      return players.find((p) => p.id === playerId) || null
+      return players.find((p) => !p.isHost && p.id === playerId) || null
     }
 
     return null
@@ -143,6 +145,7 @@ export function LobbyPage() {
     if (!room || !roomId || loading) return
 
     const status = room.status as RoomStatus
+    // 참고: 'runStyleSelection'은 백엔드 상태명이며, 프론트엔드에서는 말 선택 단계로 사용
     if (status === 'runStyleSelection') {
       const isHost = room.hostId === userId
 
@@ -341,7 +344,7 @@ export function LobbyPage() {
         <header className="mb-6 text-center">
           <h1 className="mt-2 text-2xl font-display text-neutral-50">{t('lobby.title')}</h1>
           <p className="mt-2 text-xs text-neutral-400">{t('lobby.subtitle')}</p>
-          {room.title && <p className="mt-1 text-xs text-neutral-500">{room.title}</p>}
+          {room?.title && <p className="mt-1 text-xs text-neutral-500">{room.title}</p>}
         </header>
 
         {errorMessage && (
@@ -353,7 +356,7 @@ export function LobbyPage() {
         <ul className="space-y-3">
           {players.map((player, index) => {
             const isCurrentUser = player.isHost
-              ? room.hostId === userId
+              ? room?.hostId === userId
               : player.id === playerId || player.id === currentPlayer?.id
 
             return (

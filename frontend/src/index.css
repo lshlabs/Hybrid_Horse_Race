@@ -28,10 +28,7 @@
     @apply bg-primary/30 text-white;
   }
 
-  /* Phaser 게임 도트 느낌 유지 */
   canvas {
-    image-rendering: pixelated;
-    image-rendering: -moz-crisp-edges;
-    image-rendering: crisp-edges;
+    image-rendering: auto;
   }
 }
