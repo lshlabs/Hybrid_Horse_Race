@@ -1,17 +1,16 @@
 import type { Stats } from '../engine/race'
 
-// 기존 HorseStats는 race-sim.ts의 Stats 타입으로 교체
-// RunStyle은 별도로 관리 (능력치와 분리)
-export interface HorseStats extends Stats {
-  runStyle?: string // 선택적 필드로 유지 (향후 확장용)
-}
+// 기존 HorseStats는 Stats 타입으로 교체
+// runStyle은 구버전 설계로 제거됨 (말 선택 시스템으로 대체)
+export type HorseStats = Stats
 
 export interface HorseData {
   id: string
   playerId: string
   playerName: string
   stats: HorseStats
-  position: number // 트랙 상의 위치 (0.0 ~ 1.0)
+  /** 트랙 상의 위치 (미터). 엔진 Horse.position과 동일 단위 */
+  position: number
   rank: number
   speed: number // 현재 속도
   stamina: number // 현재 지구력
@@ -26,6 +25,7 @@ export interface RaceState {
 }
 
 export interface RaceConfig {
+  /** 트랙 길이 (미터). TileMapManager.getTrackLengthM() 등과 동일 단위 */
   trackLength: number
   playerCount: number
   horses: Array<{

@@ -79,12 +79,10 @@ export function getFirebaseDb(): Firestore {
         connectFirestoreEmulator(firestoreInstance, '127.0.0.1', 8081)
         isFirestoreEmulatorConnected = true
         console.log('✅ Connected to Firestore Emulator at 127.0.0.1:8081')
-      } catch (error: any) {
+      } catch (error: unknown) {
         // 이미 연결된 경우 에러 무시
-        if (
-          error?.message?.includes('already connected') ||
-          error?.code === 'already-initialized'
-        ) {
+        const err = error as { message?: string; code?: string }
+        if (err?.message?.includes('already connected') || err?.code === 'already-initialized') {
           isFirestoreEmulatorConnected = true
           console.log('✅ Firestore Emulator already connected')
         } else {

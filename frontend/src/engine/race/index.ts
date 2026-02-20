@@ -28,20 +28,20 @@ export {
   SPECIAL_ABILITY_DESCRIPTIONS,
 } from './types'
 
-// 상수
+// 상수 (트랙/좌표: trackConstants, 밸런스: constants)
+export { DEFAULT_RACE_TILES_COUNT, METERS_PER_TILE_M } from './trackConstants'
 export {
-  TRACK_REAL_M,
-  DT,
-  MAX_SIM_TIME,
+  SIM_STEP_SEC,
+  MAX_SIM_TIME_SEC,
   MIN_SPEED_KMH,
   SPEED_BONUS_RANGE,
   BASE_STAMINA_COST_PER_M,
   SPEED_STAMINA_COST_PER_M,
-  STAMINA_COST_SPEED_CAP_MS,
+  STAMINA_COST_SPEED_CAP_MPS,
   POWER_ACCEL_MIN,
   POWER_ACCEL_MAX,
-  TARGET_ACCEL_TIME_MAX,
-  TARGET_ACCEL_TIME_MIN,
+  TARGET_ACCEL_TIME_MAX_SEC,
+  TARGET_ACCEL_TIME_MIN_SEC,
   STAMINA_COST_FACTOR_MAX,
   STAMINA_COST_FACTOR_MIN,
   STAMINA_COST_REDUCTION,
@@ -50,19 +50,27 @@ export {
   GUTS_FATIGUE_FLOOR_RANGE,
   START_ACCEL_BOOST_BASE,
   START_ACCEL_BOOST_RANGE,
-  START_DELAY_MAX,
-  COND_MIN_BONUS,
-  COND_MAX_BONUS,
+  START_DELAY_MAX_SEC,
+  LUCK_ROLL_AT_0_MIN,
+  LUCK_ROLL_AT_0_MAX,
+  LUCK_ROLL_AT_20_MIN,
+  LUCK_ROLL_AT_20_MAX,
+  LUCK_ROLL_AT_40_MIN,
+  LUCK_ROLL_AT_40_MAX,
   DEFAULT_MAX_STAT,
   DEFAULT_SATURATION_RATE,
 } from './constants'
+
+// position → progress 변환 (단일 공식)
+export { positionToProgress } from './positionUtils'
+export type { PositionToProgressOptions } from './positionUtils'
 
 // 능력치 시스템
 export {
   STAT_NAMES,
   generateRandomStats,
   normalizeStatNonLinear,
-  normalizeConsistency,
+  normalizeLuck,
   rollCondition,
   calcMaxSpeed,
   calcStaminaCostFactor,

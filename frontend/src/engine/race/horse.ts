@@ -7,11 +7,12 @@
 
 import type { Stats, EffectiveStats } from './types'
 import {
-  TRACK_REAL_M,
   BASE_STAMINA_COST_PER_M,
   SPEED_STAMINA_COST_PER_M,
-  STAMINA_COST_SPEED_CAP_MS,
+  STAMINA_COST_SPEED_CAP_MPS,
 } from './constants'
+import { DEFAULT_RACE_TILES_COUNT, METERS_PER_TILE_M } from './trackConstants'
+import { positionToProgress } from './positionUtils'
 import {
   rollCondition,
   calcMaxSpeed,
@@ -31,9 +32,9 @@ export class Horse {
   baseStats: Stats
   effStats: EffectiveStats
 
-  // 파생 파라미터
+  // 파생 파라미터 (prepareForRace 전에는 HUD 표시용 기본값)
   maxSpeed_ms: number = 0
-  maxStamina: number = 0
+  maxStamina: number = 100
   accelFactor: number = 0
   tSpeedNormalized: number = 0 // Speed 정규화 값 (스태미나 페널티 계산용)
 
@@ -62,12 +63,17 @@ export class Horse {
   escapeCrisisValue: number = 0 // 위기 탈출 수치 (능력치 증가량)
   escapeCrisisUsed: boolean = false // 위기 탈출 사용 여부 (게임당 1번)
 
-  // 현재 상태
-  currentSpeed: number = 0
-  position: number = 0
-  stamina: number = 0
+  // 현재 상태 (m/s, m, s 단위 기준). stamina는 prepareForRace 전 HUD 표시용 100
+  currentSpeed: number = 0 // m/s
+  position: number = 0 // m
+  stamina: number = 100
   finished: boolean = false
-  finishTime: number | null = null
+  finishTime: number | null = null // s (시뮬레이션 시간)
+  /**
+   * 시뮬레이션 트랙 길이 (미터).
+   * prepareForRace(trackLengthM)로만 설정. 반드시 TileMapManager.getTrackLengthM() 반환값과 동일해야 함.
+   */
+  private trackLengthM: number = DEFAULT_RACE_TILES_COUNT * METERS_PER_TILE_M
   raceStartTime: number = 0 // 실제 레이스 시작 시간 (출발 딜레이 반영)
 
   // 컨디션 롤 기록 (디버그용)
@@ -142,15 +148,22 @@ export class Horse {
 
   /**
    * 레이스 준비
-   * - 컨디션 롤 (Consistency 기반)
+   * - 행운 롤 (Luck 기반)
    * - 파생 파라미터 계산
    * - 초기 상태 세팅
+   *
+   * @param trackLengthM 트랙 길이(미터). TileMapManager.getTrackLengthM() 반환값과 동일.
+   * @param _legacyFinishLineOffsetM 사용 안 함 (position=말 코 통일). API 호환용.
    */
-  prepareForRace(): void {
+  prepareForRace(trackLengthM?: number, _legacyFinishLineOffsetM?: number): void {
+    void _legacyFinishLineOffsetM
+    if (trackLengthM !== undefined) {
+      this.trackLengthM = trackLengthM
+    }
     const s = this.baseStats
 
-    // 1) Consistency 기반 컨디션 롤
-    const cond = rollCondition(s.Consistency)
+    // 1) Luck 기반 행운 롤
+    const cond = rollCondition(s.Luck)
     const mult = 1.0 + cond
     this.conditionRoll = cond
 
@@ -161,7 +174,7 @@ export class Horse {
       Power: s.Power * mult,
       Guts: s.Guts * mult,
       Start: s.Start * mult,
-      Consistency: s.Consistency,
+      Luck: s.Luck,
     }
 
     const e = this.effStats
@@ -213,6 +226,7 @@ export class Horse {
    * @param currentTime 현재 시간 (초)
    */
   step(dt: number, currentTime: number): void {
+    // dt/currentTime은 시뮬레이션 시간(초) 기준
     if (this.finished) return
 
     // 출발 딜레이 체크: 실제 레이스 시작 시간이 되기 전에는 움직이지 않음
@@ -220,7 +234,8 @@ export class Horse {
       return
     }
 
-    if (this.position >= TRACK_REAL_M) {
+    // position = 말 코 위치(m). 코가 결승선에 닿으면 완주
+    if (this.position >= this.trackLengthM) {
       this.finished = true
       if (this.finishTime === null) {
         this.finishTime = currentTime
@@ -228,14 +243,17 @@ export class Horse {
       return
     }
 
-    const progress = clamp(this.position / TRACK_REAL_M, 0, 1)
+    const progress = positionToProgress(this.position, this.trackLengthM, {
+      capAtOne: true,
+    })
 
     // 목표 속도 계산
     let targetSpeed = this.maxSpeed_ms
 
     // 가속 계수 (Power 기반 + Start 기반 초반 버프)
     let accel = this.accelFactor
-    if (this.position < 100) {
+    const startBoostDistance = this.trackLengthM * 0.2 // 초반 20% 구간 (500m→100m)
+    if (this.position < startBoostDistance) {
       accel *= this.startAccelBoost
     }
 
@@ -258,9 +276,9 @@ export class Horse {
     targetSpeed = Math.min(targetSpeed, this.maxSpeed_ms)
 
     // 스태미나 소모 계산
-    const speedForCost = Math.min(this.currentSpeed, STAMINA_COST_SPEED_CAP_MS)
+    const speedForCost = Math.min(this.currentSpeed, STAMINA_COST_SPEED_CAP_MPS)
     const distanceThisStep = this.currentSpeed * dt
-    const speedNorm = STAMINA_COST_SPEED_CAP_MS > 0 ? speedForCost / STAMINA_COST_SPEED_CAP_MS : 0
+    const speedNorm = STAMINA_COST_SPEED_CAP_MPS > 0 ? speedForCost / STAMINA_COST_SPEED_CAP_MPS : 0
 
     // 기본 소모 + 속도 비례 소모
     let staminaCostPerM = BASE_STAMINA_COST_PER_M + SPEED_STAMINA_COST_PER_M * speedNorm
@@ -318,13 +336,11 @@ export class Horse {
     const prevPosition = this.position
     this.position += this.currentSpeed * dt
 
-    // 완주 체크 (정밀한 시간 계산)
-    if (this.position >= TRACK_REAL_M && !this.finished) {
+    // 완주 체크 (position=말 코 → 코가 trackLengthM 도달 시, 정밀한 시간 보간)
+    if (this.position >= this.trackLengthM && !this.finished) {
       this.finished = true
-
-      // 완주 시점을 정밀하게 보간 계산
-      if (prevPosition < TRACK_REAL_M && this.currentSpeed > 0) {
-        const remainingDistance = TRACK_REAL_M - prevPosition
+      if (prevPosition < this.trackLengthM && this.currentSpeed > 0) {
+        const remainingDistance = this.trackLengthM - prevPosition
         const timeToFinish = remainingDistance / this.currentSpeed
         this.finishTime = currentTime - dt + timeToFinish
       } else {

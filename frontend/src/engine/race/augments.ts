@@ -34,14 +34,7 @@ const AUGMENT_RARITY_WEIGHTS: Record<AugmentRarity, number> = {
 /**
  * 모든 능력치 타입
  */
-const ALL_STAT_TYPES: AugmentStatType[] = [
-  'Speed',
-  'Stamina',
-  'Power',
-  'Guts',
-  'Start',
-  'Consistency',
-]
+const ALL_STAT_TYPES: AugmentStatType[] = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Luck']
 
 /**
  * 랜덤 정수 생성 (min ~ max)

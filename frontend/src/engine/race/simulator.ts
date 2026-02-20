@@ -7,7 +7,7 @@
 
 import { Horse } from './horse'
 import type { RaceOptions, RaceResult, SnapshotOrder } from './types'
-import { DT, MAX_SIM_TIME } from './constants'
+import { SIM_STEP_SEC, MAX_SIM_TIME_SEC } from './constants'
 import { generateRandomStats } from './stat-system'
 
 // =========================
@@ -60,9 +60,10 @@ export function runRace(options: RaceOptions = {}): RaceResult[] {
     }
   }
 
+  // 시뮬레이션 시간(초). DT씩 증가한다.
   let time = 0
 
-  while (time < MAX_SIM_TIME) {
+  while (time < MAX_SIM_TIME_SEC) {
     let allFinished = true
 
     // 현재 순위 계산 (추월 감지 및 위기 탈출 발동용)
@@ -77,7 +78,7 @@ export function runRace(options: RaceOptions = {}): RaceResult[] {
 
     for (const h of horses) {
       if (!h.finished) {
-        h.step(DT, time)
+        h.step(SIM_STEP_SEC, time)
       }
       if (!h.finished) {
         allFinished = false
@@ -85,9 +86,10 @@ export function runRace(options: RaceOptions = {}): RaceResult[] {
     }
 
     if (allFinished) break
-    time += DT
+    time += SIM_STEP_SEC
   }
 
+  // 결과 정렬: 완주 말은 finishTime 오름차순, 미완주는 진행거리 내림차순
   const results = horses
     .map((h) => ({
       horse: h,

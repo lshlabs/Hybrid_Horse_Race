@@ -10,30 +10,29 @@ import {
   query,
   orderBy,
   type FirestoreError,
+  type Timestamp,
 } from 'firebase/firestore'
 import { getFirebaseDb } from '../lib/firebase'
+import type { Stats } from '../engine/race/types'
 
 // 타입 정의 (functions/src/types.ts와 동일)
 export type RoomStatus =
   | 'waiting'
-  | 'runStyleSelection'
+  | 'horseSelection'
   | 'augmentSelection'
   | 'racing'
   | 'setResult'
   | 'finished'
 
-export type RunStyleId = 'paceSetter' | 'frontRunner' | 'stalker' | 'closer'
-
 export interface Room {
-  hostId: string
   title: string
-  setCount: number
+  roundCount: number
   rerollLimit: number
   rerollUsed: number
   status: RoomStatus
   currentSet: number
-  createdAt: any // Timestamp
-  updatedAt: any // Timestamp
+  createdAt: Date | Timestamp
+  updatedAt: Date | Timestamp
 }
 
 export interface Player {
@@ -42,19 +41,12 @@ export interface Player {
   avatar?: string
   isHost: boolean
   isReady: boolean
-  runStyle?: RunStyleId
-  availableRunStyles?: RunStyleId[]
   selectedAugments: Array<{
     setIndex: number
     augmentId: string
   }>
-  horseStats?: {
-    speed: number
-    stamina: number
-    condition: number
-    jockeySkill: number
-  }
-  joinedAt: any // Timestamp
+  horseStats?: Stats // 실제 게임 엔진의 Stats 구조 { Speed, Stamina, Power, Guts, Start, Luck }
+  joinedAt: Date | Timestamp
 }
 
 interface UseRoomResult {
@@ -75,14 +67,22 @@ export function useRoom(roomId: string | null): UseRoomResult {
 
   useEffect(() => {
     if (!roomId) {
+      // roomId가 없으면 초기 상태로 리셋하고 구독 설정하지 않음
+      // 이 패턴은 roomId 변경 시 초기화를 위해 필요함
+      // 참고: useEffect 내 setState는 일반적으로 피해야 하지만,
+      // 구독 설정 전 초기화는 이 패턴이 필요함
+      /* eslint-disable react-hooks/set-state-in-effect */
       setRoom(null)
       setPlayers([])
       setLoading(false)
       setError(null)
+      /* eslint-enable react-hooks/set-state-in-effect */
       return
     }
 
     const db = getFirebaseDb()
+    // 구독 설정 전에 로딩 상태 설정 (구독 콜백에서 업데이트됨)
+    // 이 setState는 구독 시작 전 초기화를 위해 필요함
     setLoading(true)
     setError(null)
 

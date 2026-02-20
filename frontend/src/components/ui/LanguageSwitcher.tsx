@@ -1,28 +1,28 @@
-import type { ChangeEvent } from 'react'
+import { Languages } from 'lucide-react'
 import { AVAILABLE_LANGUAGES } from '../../lib/i18n'
 import { useTranslation } from 'react-i18next'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './select'
 
 export function LanguageSwitcher() {
   const { i18n } = useTranslation()
 
-  const handleChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    void i18n.changeLanguage(event.target.value)
+  const handleValueChange = (value: string) => {
+    void i18n.changeLanguage(value)
   }
 
   return (
-    <label className="ml-auto inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-neutral-300 shadow-sm transition hover:border-white/20">
-      <span className="font-medium uppercase tracking-[0.3em] text-primary/80">Lang</span>
-      <select
-        value={i18n.resolvedLanguage}
-        onChange={handleChange}
-        className="cursor-pointer bg-transparent text-sm text-neutral-100 outline-none"
-      >
+    <Select value={i18n.resolvedLanguage || 'ko'} onValueChange={handleValueChange}>
+      <SelectTrigger className="ml-auto inline-flex h-auto w-auto items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-muted-foreground shadow-sm transition hover:border-white/20 [&>span]:line-clamp-none">
+        <Languages className="h-4 w-4" />
+        <SelectValue className="text-sm" />
+      </SelectTrigger>
+      <SelectContent className="bg-secondary border-none">
         {AVAILABLE_LANGUAGES.map((lang) => (
-          <option key={lang.code} value={lang.code} className="bg-background text-neutral-900">
+          <SelectItem key={lang.code} value={lang.code}>
             {lang.label}
-          </option>
+          </SelectItem>
         ))}
-      </select>
-    </label>
+      </SelectContent>
+    </Select>
   )
 }

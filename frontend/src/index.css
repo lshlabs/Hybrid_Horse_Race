@@ -1,11 +1,53 @@
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
 
+/* Neo둥근모 (Phaser 게임 내 모든 텍스트용) */
+@font-face {
+  font-family: "NeoDunggeunmo";
+  src: url("/fonts/NeoDunggeunmo.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
+    --background: 224 71.4% 4.1%;
+    --foreground: 210 20% 98%;
+    --card: 224 71.4% 4.1%;
+    --card-foreground: 210 20% 98%;
+    --popover: 224 71.4% 4.1%;
+    --popover-foreground: 210 20% 98%;
+    --primary: 263.4 70% 50.4%;
+    --primary-foreground: 210 20% 98%;
+    --secondary: 215 27.9% 16.9%;
+    --secondary-foreground: 210 20% 98%;
+    --muted: 215 27.9% 16.9%;
+    --muted-foreground: 217.9 10.6% 64.9%;
+    --accent: 215 27.9% 16.9%;
+    --accent-foreground: 210 20% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 215 27.9% 16.9%;
+    --input: 215 27.9% 16.9%;
+    --ring: 263.4 70% 50.4%;
+    --radius: 0.5rem;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+    --surface: 222 47% 11%;
+    --surface-muted: 217 33% 17%;
+    --surface-highlight: 215 28% 17%;
+    --success: 142 71% 45%;
+    --success-foreground: 144 61% 20%;
+    --warning: 25 95% 53%;
+    --warning-foreground: 20 90% 48%;
+
     color-scheme: dark;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
@@ -14,10 +56,11 @@
   }
 
   body {
-    @apply bg-background text-neutral-100 font-sans antialiased min-h-screen;
+    @apply text-foreground font-sans antialiased min-h-screen;
+    background-color: transparent;
     background-image:
       radial-gradient(ellipse at top, rgba(56, 189, 248, 0.15), transparent 55%),
-      radial-gradient(ellipse at bottom, rgba(244, 114, 182, 0.12), transparent 50%);
+      radial-gradient(ellipse at bottom, rgba(162, 114, 224, 0.12), transparent 50%);
   }
 
   a {
@@ -31,4 +74,46 @@
   canvas {
     image-rendering: auto;
   }
+}
+
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@keyframes fadeInSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-slide-down {
+  animation: fadeInSlideDown 0.5s ease-out;
+}
+
+@keyframes rotate-90 {
+  0% {
+    transform: rotate(0deg);
+  }
+  20% {
+    transform: rotate(-90deg);
+  }
+  25%,
+  100% {
+    transform: rotate(-90deg);
+  }
+}
+
+.animate-rotate-90 {
+  animation: rotate-90 4s ease-in-out infinite;
 }

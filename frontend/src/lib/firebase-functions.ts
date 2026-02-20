@@ -37,11 +37,12 @@ function getFunctionsInstance() {
             console.log(
               '✅ Connected to Functions Emulator at 127.0.0.1:5001 (region: asia-northeast3)',
             )
-          } catch (error: any) {
+          } catch (error: unknown) {
             // 이미 연결된 경우 에러 무시
+            const err = error as { message?: string; code?: string }
             if (
-              error?.message?.includes('already connected') ||
-              error?.code === 'functions/already-initialized'
+              err?.message?.includes('already connected') ||
+              err?.code === 'functions/already-initialized'
             ) {
               isEmulatorConnected = true
               console.log('✅ Functions Emulator already connected')
@@ -80,7 +81,7 @@ function createCallable<TRequest, TResponse>(name: string): HttpsCallable<TReque
 
 // 룸 관리 Functions
 export const createRoom = createCallable<
-  { hostId: string; title: string; setCount: number; rerollLimit: number },
+  { playerId: string; title: string; roundCount: number; rerollLimit: number },
   { roomId: string; status: string }
 >('createRoom')
 
@@ -94,7 +95,7 @@ export const leaveRoom = createCallable<{ roomId: string; playerId: string }, { 
 )
 
 export const updateRoomSettings = createCallable<
-  { roomId: string; playerId: string; setCount?: number; rerollLimit?: number },
+  { roomId: string; playerId: string; roundCount?: number; rerollLimit?: number },
   { success: boolean }
 >('updateRoomSettings')
 
@@ -104,10 +105,21 @@ export const startGame = createCallable<
 >('startGame')
 
 // 게임 진행 Functions
-export const selectRunStyle = createCallable<
-  { roomId: string; playerId: string; runStyle: string },
+export const selectHorse = createCallable<
+  {
+    roomId: string
+    playerId: string
+    horseStats: {
+      Speed: number
+      Stamina: number
+      Power: number
+      Guts: number
+      Start: number
+      Luck: number
+    }
+  },
   { success: boolean; allPlayersSelected: boolean; nextStatus: string }
->('selectRunStyle')
+>('selectHorse')
 
 export const selectAugment = createCallable<
   { roomId: string; playerId: string; setIndex: number; augmentId: string },
@@ -127,6 +139,25 @@ export const startRace = createCallable<
 export const skipSet = createCallable<{ roomId: string; setIndex: number }, { success: boolean }>(
   'skipSet',
 )
+
+// 최종 결과 Functions
+export const submitFinalRaceResult = createCallable<
+  {
+    roomId: string
+    finalRankings: Array<{
+      rank: number
+      name: string
+      totalScore: number
+      roundResults: Array<{
+        rank: number
+        name: string
+        time: number
+        finished: boolean
+      } | null>
+    }>
+  },
+  { success: boolean }
+>('submitFinalRaceResult')
 
 // 상태 관리 Functions
 export const setPlayerReady = createCallable<

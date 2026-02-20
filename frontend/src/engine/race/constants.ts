@@ -1,17 +1,13 @@
 // =========================
-// 물리 상수 & 게임 밸런스 파라미터
+// 게임 밸런스 파라미터 (속도·스태미나·가속·능력치 등)
+// 트랙/좌표/오프셋 상수는 trackConstants.ts 참고.
 // =========================
-
-/**
- * 트랙 설정
- */
-export const TRACK_REAL_M = 500 // 트랙 길이 (미터)
 
 /**
  * 시뮬레이션 설정
  */
-export const DT = 0.05 // 시뮬레이션 시간 단위 (초)
-export const MAX_SIM_TIME = 120 // 최대 시뮬레이션 시간 (초)
+export const SIM_STEP_SEC = 0.05 // 시뮬레이션 시간 단위 (초)
+export const MAX_SIM_TIME_SEC = 120 // 최대 시뮬레이션 시간 (초)
 
 /**
  * Speed → 최고 속도 범위 (km/h)
@@ -19,15 +15,15 @@ export const MAX_SIM_TIME = 120 // 최대 시뮬레이션 시간 (초)
  * - Speed 30: 68 km/h (기준점)
  * - Speed 30 초과: 페널티 적용 (비선형 증가)
  */
-export const MIN_SPEED_KMH = 58 // Speed 0일 때의 최소 속도
-export const SPEED_BONUS_RANGE = 10 // Speed 0 → 30까지의 속도 증가량 (58 → 68 km/h)
+export const MIN_SPEED_KMH = 58 // Speed 0일 때의 최소 속도 (km/h)
+export const SPEED_BONUS_RANGE = 10 // Speed 0 → 30까지의 속도 증가량 (km/h)
 
 /**
  * 스태미나 소모 계수
  */
 export const BASE_STAMINA_COST_PER_M = 0.1 // 기본 소모 계수 (1m당)
 export const SPEED_STAMINA_COST_PER_M = 0.08 // 속도에 따른 추가 소모 (1m당)
-export const STAMINA_COST_SPEED_CAP_MS = (60 * 1000) / 3600 // 스태미나 계산 속도 상한 (60km/h)
+export const STAMINA_COST_SPEED_CAP_MPS = (60 * 1000) / 3600 // 스태미나 계산 속도 상한 (m/s, 60km/h)
 
 /**
  * Power → 가속 계수 범위
@@ -46,8 +42,8 @@ export const POWER_ACCEL_MAX = 1.5 // Power 30일 때의 가속 계수
  * - Power 30 이상: 계속 감소 (능력치 차이 반영)
  * - 계산식: MAX - (tPower + tStart) * (MAX - MIN) / 2.0
  */
-export const TARGET_ACCEL_TIME_MAX = 7.0 // 최대 가속 시간 (Power 0 + Start 0)
-export const TARGET_ACCEL_TIME_MIN = 3.0 // 기준점 가속 시간 (Power 30 + Start 30, 최소값 아님)
+export const TARGET_ACCEL_TIME_MAX_SEC = 7.0 // 최대 가속 시간 (Power 0 + Start 0)
+export const TARGET_ACCEL_TIME_MIN_SEC = 3.0 // 기준점 가속 시간 (Power 30 + Start 30, 최소값 아님)
 
 /**
  * Stamina → 스태미나 소모 효율 계수 범위
@@ -82,16 +78,20 @@ export const START_ACCEL_BOOST_RANGE = 0.3 // Start 0 → 30까지의 버프 증
  * - Start 0: 0~1초 (랜덤 딜레이)
  * - Start 30: 0초 (딜레이 없음, 기준점)
  */
-export const START_DELAY_MAX = 1.0 // Start 0일 때의 최대 딜레이 시간
+export const START_DELAY_MAX_SEC = 1.0 // Start 0일 때의 최대 딜레이 시간
 
 /**
- * Consistency → 컨디션 롤 범위 (로또형 운빨)
- * - Consistency 0: -3% ~ +3% (완전 랜덤)
- * - Consistency 10: -1.5% ~ +3% (음수 범위 축소)
- * - Consistency 20: 0% ~ +3% (음수 없음, 보너스만)
+ * Luck → 행운 롤 범위 (로또형 운빨)
+ * - Luck 0: -10% ~ +10%
+ * - Luck 20: +0% ~ +20%
+ * - Luck 40: +10% ~ +50%
  */
-export const COND_MIN_BONUS = -0.03 // 최소 -3%
-export const COND_MAX_BONUS = 0.03 // 최대 +3%
+export const LUCK_ROLL_AT_0_MIN = -0.1 // Luck 0 최소 -10%
+export const LUCK_ROLL_AT_0_MAX = 0.1 // Luck 0 최대 +10%
+export const LUCK_ROLL_AT_20_MIN = 0 // Luck 20 최소 +0%
+export const LUCK_ROLL_AT_20_MAX = 0.2 // Luck 20 최대 +20%
+export const LUCK_ROLL_AT_40_MIN = 0.1 // Luck 40 최소 +10%
+export const LUCK_ROLL_AT_40_MAX = 0.5 // Luck 40 최대 +50%
 
 /**
  * 능력치 정규화 기본 파라미터

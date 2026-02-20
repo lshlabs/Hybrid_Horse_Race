@@ -4,38 +4,47 @@
 
 export type RoomStatus =
   | 'waiting'
-  | 'runStyleSelection'
+  | 'horseSelection'
   | 'augmentSelection'
   | 'racing'
   | 'setResult'
   | 'finished'
 
-export type RunStyleId = 'paceSetter' | 'frontRunner' | 'stalker' | 'closer'
+// 실제 게임 엔진의 Stats 구조
+export type StatName = 'Speed' | 'Stamina' | 'Power' | 'Guts' | 'Start' | 'Luck'
 
-export type AugmentCategory = 'speed' | 'stamina' | 'runStyle' | 'condition' | 'jockey'
+// 증강 등급 (최신 설계)
+export type AugmentRarity = 'common' | 'rare' | 'epic' | 'legendary' | 'hidden'
 
-export type AugmentRarity = 'common' | 'rare' | 'epic'
+// 특수 능력 타입
+export type SpecialAbilityType = 'lastSpurt' | 'overtake' | 'escapeCrisis'
 
-export interface AugmentDefinition {
+// 증강 인터페이스 (최신 설계)
+export interface Augment {
+  /** 증강 고유 ID */
   id: string
-  name: Record<string, string> // locale key
-  description: Record<string, string>
-  category: AugmentCategory
+  /** 증강 이름 */
+  name: string
+  /** 증강 등급 */
   rarity: AugmentRarity
-  effects: AugmentEffect[]
+  /** 상승시키는 능력치 타입 (일반 증강인 경우) */
+  statType?: StatName
+  /** 능력치 상승량 (일반 증강인 경우) */
+  statValue?: number
+  /** 특수 능력 타입 (특수 능력인 경우) */
+  specialAbility?: SpecialAbilityType
+  /** 특수 능력 발동 조건 값 (능력치가 높을수록 더 빨리 발동) */
+  specialAbilityValue?: number
+  /** 증강 설명 */
+  description?: string
 }
 
-export type AugmentEffect =
-  | { type: 'speedBonus'; amount: number }
-  | { type: 'staminaBonus'; amount: number }
-  | { type: 'runStyleSuccess'; style: RunStyleId; bonus: number }
-  | { type: 'conditionFloor'; value: number }
-  | { type: 'jockeyBonus'; accel: number; recovery: number }
+// 레거시 호환성을 위한 타입 (점진적 제거 예정)
+export type AugmentDefinition = Augment
 
 export interface Room {
-  hostId: string
   title: string
-  setCount: number
+  roundCount: number
   rerollLimit: number
   rerollUsed: number
   status: RoomStatus
@@ -49,24 +58,24 @@ export interface Player {
   avatar?: string
   isHost: boolean
   isReady: boolean
-  runStyle?: RunStyleId
-  availableRunStyles?: RunStyleId[] // 게임 시작 시 제시된 주행 습성 3개
   selectedAugments: Array<{
     setIndex: number
     augmentId: string
   }>
   horseStats?: {
-    speed: number
-    stamina: number
-    condition: number
-    jockeySkill: number
-  }
+    Speed: number
+    Stamina: number
+    Power: number
+    Guts: number
+    Start: number
+    Luck: number
+  } // 실제 게임 엔진의 Stats 구조
   joinedAt: FirebaseFirestore.Timestamp
 }
 
 export interface GameSet {
   setIndex: number
-  availableAugments: AugmentDefinition[]
+  availableAugments: Augment[] // 최신 Augment 구조 사용
   selections: Record<string, string> // playerId -> augmentId
   raceResult?: {
     rankings: Array<{ playerId: string; time: number; position: number }>

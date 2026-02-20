@@ -37,9 +37,11 @@ export function NeonCard({
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/5 via-transparent to-white/10 opacity-70" />
       <div className="relative z-10 flex flex-col gap-3">
         {title ? (
-          <header>
+          <header className="text-center">
             <h2 className="text-lg font-display uppercase tracking-[0.35em] text-white">{title}</h2>
-            {description ? <p className="mt-2 text-sm text-neutral-300">{description}</p> : null}
+            {description ? (
+              <p className="mt-2 text-sm text-muted-foreground">{description}</p>
+            ) : null}
           </header>
         ) : null}
         <div className="flex flex-1 flex-col gap-4">{children}</div>

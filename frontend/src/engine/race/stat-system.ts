@@ -9,14 +9,18 @@ import type { Stats, StatName } from './types'
 import {
   DEFAULT_MAX_STAT,
   DEFAULT_SATURATION_RATE,
-  COND_MIN_BONUS,
-  COND_MAX_BONUS,
+  LUCK_ROLL_AT_0_MIN,
+  LUCK_ROLL_AT_0_MAX,
+  LUCK_ROLL_AT_20_MIN,
+  LUCK_ROLL_AT_20_MAX,
+  LUCK_ROLL_AT_40_MIN,
+  LUCK_ROLL_AT_40_MAX,
   MIN_SPEED_KMH,
   SPEED_BONUS_RANGE,
   POWER_ACCEL_MIN,
   POWER_ACCEL_MAX,
-  TARGET_ACCEL_TIME_MAX,
-  TARGET_ACCEL_TIME_MIN,
+  TARGET_ACCEL_TIME_MAX_SEC,
+  TARGET_ACCEL_TIME_MIN_SEC,
   STAMINA_COST_FACTOR_MAX,
   STAMINA_COST_FACTOR_MIN,
   STAMINA_COST_REDUCTION,
@@ -25,7 +29,7 @@ import {
   GUTS_FATIGUE_FLOOR_RANGE,
   START_ACCEL_BOOST_BASE,
   START_ACCEL_BOOST_RANGE,
-  START_DELAY_MAX,
+  START_DELAY_MAX_SEC,
 } from './constants'
 
 /**
@@ -50,7 +54,7 @@ export function kmhToMs(kmh: number): number {
 /**
  * 능력치 이름 배열
  */
-export const STAT_NAMES: StatName[] = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Consistency']
+export const STAT_NAMES: StatName[] = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Luck']
 
 // =========================
 // 능력치 생성 (총합 80)
@@ -60,7 +64,7 @@ export const STAT_NAMES: StatName[] = ['Speed', 'Stamina', 'Power', 'Guts', 'Sta
  * 랜덤 능력치 생성 (총합 80)
  * - 기본값: 각 능력치 8 (총 48)
  * - 나머지 32를 랜덤 분배
- * - 능력치 상한 제한 없음 (20 이상도 가능)
+ * - 능력치 상한: 20 (각 능력치 최대 20)
  */
 export function generateRandomStats(): Stats {
   const stats: Stats = {
@@ -69,13 +73,23 @@ export function generateRandomStats(): Stats {
     Power: 8,
     Guts: 8,
     Start: 8,
-    Consistency: 8,
+    Luck: 8,
   }
 
   let remaining = 80 - 6 * 8
+  const MAX_STAT = 20
 
   while (remaining > 0) {
-    const key = STAT_NAMES[randInt(0, STAT_NAMES.length - 1)]
+    // 20 미만인 능력치만 선택 가능
+    const availableStats = STAT_NAMES.filter((key) => stats[key] < MAX_STAT)
+
+    // 모든 능력치가 20에 도달했으면 종료 (이론적으로는 발생하지 않음: 6 * 20 = 120 > 80)
+    if (availableStats.length === 0) {
+      break
+    }
+
+    // 20 미만인 능력치 중 랜덤 선택
+    const key = availableStats[randInt(0, availableStats.length - 1)]
     stats[key] += 1
     remaining -= 1
   }
@@ -114,45 +128,51 @@ export function normalizeStatNonLinear(
 }
 
 /**
- * Consistency 전용 비선형 정규화
- * - 20 이하: 선형 (cons / 20)
- * - 20 초과: 효율 감소 (1.0 + (cons - 20) / 40)
+ * Luck 전용 비선형 정규화
+ * - 20 이하: 선형 (luck / 20)
+ * - 20 초과: 효율 감소 (1.0 + (luck - 20) / 40)
  */
-export function normalizeConsistency(cons: number): number {
-  if (cons <= 20) {
-    return cons / 20
+export function normalizeLuck(luck: number): number {
+  if (luck <= 20) {
+    return luck / 20
   } else {
-    return 1.0 + (cons - 20) / 40 // 20 초과분은 0.5배 효율
+    return 1.0 + (luck - 20) / 40 // 20 초과분은 0.5배 효율
   }
 }
 
 // =========================
-// 컨디션 롤 (Consistency 기반)
+// 행운 롤 (Luck 기반)
 // =========================
 
 /**
- * 컨디션 롤
- * - Consistency가 높을수록 음수 범위가 줄어들고 최소값이 상승
- * - Consistency 0: -3% ~ +3% (완전 랜덤)
- * - Consistency 20: 0% ~ +3% (음수 없음)
- * - Consistency 40: +1.5% ~ +3% (더 높은 저점)
+ * 행운 롤
+ * - Luck이 높을수록 음수 범위가 줄어들고 최소값이 상승
+ * - Luck 0: -10% ~ +10%
+ * - Luck 20: +0% ~ +20%
+ * - Luck 40: +10% ~ +50%
  *
- * @returns 컨디션 보너스 (-0.03 ~ 0.03)
+ * @returns 행운 보너스 (-0.10 ~ 0.50)
  */
-export function rollCondition(consistency: number): number {
-  const normalizedCons = normalizeConsistency(consistency)
+export function rollCondition(luck: number): number {
+  const normalized = normalizeLuck(luck)
 
   let minBonus: number
-  if (normalizedCons <= 1.0) {
-    // 1.0 이하: 음수 범위가 점진적으로 줄어듦
-    minBonus = COND_MIN_BONUS * (1 - normalizedCons) // Consistency 0 → -3%, Consistency 20 → 0%
+  let maxBonus: number
+  if (normalized <= 1.0) {
+    // Luck 0~20: -10%~+10% → +0%~+20% 선형 보간
+    minBonus = LUCK_ROLL_AT_0_MIN + normalized * (LUCK_ROLL_AT_20_MIN - LUCK_ROLL_AT_0_MIN)
+    maxBonus = LUCK_ROLL_AT_0_MAX + normalized * (LUCK_ROLL_AT_20_MAX - LUCK_ROLL_AT_0_MAX)
+  } else if (normalized <= 1.5) {
+    // Luck 20~40: +0%~+20% → +10%~+50% 선형 보간
+    const t = (normalized - 1.0) / 0.5
+    minBonus = LUCK_ROLL_AT_20_MIN + t * (LUCK_ROLL_AT_40_MIN - LUCK_ROLL_AT_20_MIN)
+    maxBonus = LUCK_ROLL_AT_20_MAX + t * (LUCK_ROLL_AT_40_MAX - LUCK_ROLL_AT_20_MAX)
   } else {
-    // 1.0 초과: 효율 감소하여 저점을 높임 (20 초과분은 50% 효율)
-    const excessCons = normalizedCons - 1.0
-    minBonus = excessCons * 0.5 * Math.abs(COND_MIN_BONUS)
+    // Luck 40 초과: 상한 유지
+    minBonus = LUCK_ROLL_AT_40_MIN
+    maxBonus = LUCK_ROLL_AT_40_MAX
   }
 
-  const maxBonus = COND_MAX_BONUS // 항상 +3%
   return randFloat(minBonus, maxBonus)
 }
 
@@ -209,8 +229,8 @@ export function calcTargetAccelTime(powerStat: number, startStat: number): numbe
   const tPower = normalizeStatNonLinear(powerStat)
   const tStart = normalizeStatNonLinear(startStat)
   // tPower + tStart = 0 → MAX, tPower + tStart = 2.0 → MIN (능력치 40일 때)
-  const timeRange = (TARGET_ACCEL_TIME_MAX - TARGET_ACCEL_TIME_MIN) / 2.0
-  const targetAccelTime = TARGET_ACCEL_TIME_MAX - (tPower + tStart) * timeRange
+  const timeRange = (TARGET_ACCEL_TIME_MAX_SEC - TARGET_ACCEL_TIME_MIN_SEC) / 2.0
+  const targetAccelTime = TARGET_ACCEL_TIME_MAX_SEC - (tPower + tStart) * timeRange
   // 능력치 40 이상에서도 계속 감소 (능력치 차이 반영)
   return Math.max(0.1, targetAccelTime) // 최소값만 보장 (0.1초 이하 방지)
 }
@@ -248,7 +268,7 @@ export function calcStartAccelBoost(startStat: number): number {
  */
 export function calcStartDelay(startStat: number): number {
   const tStart = normalizeStatNonLinear(startStat)
-  const maxDelay = START_DELAY_MAX - tStart // Start 0 → 1.0초, Start 40 → 0초
+  const maxDelay = START_DELAY_MAX_SEC - tStart // Start 0 → 1.0초, Start 40 → 0초
   return randFloat(0, Math.max(0, maxDelay))
 }
 

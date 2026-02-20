@@ -11,10 +11,8 @@ import {
   areAllPlayersReady,
   getAllPlayers,
   updateRoomStatus,
-  generateInitialStats,
-  selectRandomRunStyles,
 } from './utils'
-import type { RoomStatus, RunStyleId, Player } from './types'
+import type { RoomStatus, Player } from './types'
 
 initializeApp()
 
@@ -23,9 +21,9 @@ const db = getFirestore()
 // ==================== 룸 관리 ====================
 
 const createRoomSchema = z.object({
-  hostId: z.string().min(1, 'hostId is required'),
+  playerId: z.string().min(1, 'playerId is required'),
   title: z.string().min(1).max(48),
-  setCount: z.number().int().min(1).max(9),
+  roundCount: z.number().int().min(1).max(9),
   rerollLimit: z.number().int().min(0).max(5),
 })
 
@@ -44,15 +42,14 @@ export const createRoom = onCall(
         })
       }
 
-      const { hostId, title, setCount, rerollLimit } = parseResult.data
+      const { playerId, title, roundCount, rerollLimit } = parseResult.data
       const roomRef = db.collection('rooms').doc()
       const now = Timestamp.now()
 
       // 룸 생성
       await roomRef.set({
-        hostId,
         title,
-        setCount,
+        roundCount,
         rerollLimit,
         rerollUsed: 0,
         status: 'waiting' as RoomStatus,
@@ -61,8 +58,8 @@ export const createRoom = onCall(
         updatedAt: now,
       })
 
-      // 호스트를 플레이어로 추가
-      await roomRef.collection('players').doc(hostId).set({
+      // 호스트를 플레이어로 추가 (playerId 사용)
+      await roomRef.collection('players').doc(playerId).set({
         name: 'Host',
         isHost: true,
         isReady: false,
@@ -70,7 +67,7 @@ export const createRoom = onCall(
         joinedAt: now,
       })
 
-      logger.info('Created room', { roomId: roomRef.id, hostId })
+      logger.info('Created room', { roomId: roomRef.id, playerId, isHost: true })
 
       return {
         roomId: roomRef.id,
@@ -299,7 +296,7 @@ export const leaveRoom = onCall(
 const updateRoomSettingsSchema = z.object({
   roomId: z.string().min(1, 'roomId is required'),
   playerId: z.string().min(1, 'playerId is required'),
-  setCount: z.number().int().min(1).max(9).optional(),
+  roundCount: z.number().int().min(1).max(9).optional(),
   rerollLimit: z.number().int().min(0).max(5).optional(),
 })
 
@@ -317,7 +314,7 @@ export const updateRoomSettings = onCall(
         })
       }
 
-      const { roomId, playerId, setCount, rerollLimit } = parseResult.data
+      const { roomId, playerId, roundCount, rerollLimit } = parseResult.data
 
       // 룸 존재 확인
       const room = await getRoom(roomId)
@@ -341,12 +338,12 @@ export const updateRoomSettings = onCall(
       }
 
       // 업데이트할 필드 구성
-      const updateData: { setCount?: number; rerollLimit?: number; updatedAt: Timestamp } = {
+      const updateData: { roundCount?: number; rerollLimit?: number; updatedAt: Timestamp } = {
         updatedAt: Timestamp.now(),
       }
 
-      if (setCount !== undefined) {
-        updateData.setCount = setCount
+      if (roundCount !== undefined) {
+        updateData.roundCount = roundCount
       }
 
       if (rerollLimit !== undefined) {
@@ -356,7 +353,7 @@ export const updateRoomSettings = onCall(
       // 룸 설정 업데이트
       await db.collection('rooms').doc(roomId).update(updateData)
 
-      logger.info('Room settings updated', { roomId, setCount, rerollLimit })
+      logger.info('Room settings updated', { roomId, roundCount, rerollLimit })
 
       return { success: true }
     } catch (error) {
@@ -438,24 +435,11 @@ export const startGame = onCall(
         )
       }
 
-      // 각 플레이어에게 초기 능력치 부여 및 랜덤 주행 습성 3개 제시
-      const playerUpdates = playersSnapshot.docs.map(async (playerDoc) => {
-        const playerId = playerDoc.id
-        const playerRef = db.collection('rooms').doc(roomId).collection('players').doc(playerId)
+      // 말 선택은 프론트엔드에서 이루어지며, selectHorse 함수를 통해 저장됨
+      // 초기 스탯은 생성하지 않음 (말 선택 시 저장됨)
 
-        const initialStats = generateInitialStats()
-        const availableRunStyles = selectRandomRunStyles()
-
-        await playerRef.update({
-          horseStats: initialStats,
-          availableRunStyles: availableRunStyles as RunStyleId[], // 제시된 주행 습성 3개
-        })
-      })
-
-      await Promise.all(playerUpdates)
-
-      // 룸 상태를 runStyleSelection으로 변경
-      await updateRoomStatus(roomId, 'runStyleSelection')
+      // 룸 상태를 horseSelection으로 변경
+      await updateRoomStatus(roomId, 'horseSelection')
 
       // 룸 업데이트
       await db.collection('rooms').doc(roomId).update({
@@ -464,7 +448,7 @@ export const startGame = onCall(
 
       logger.info('Game started', { roomId, playerCount })
 
-      return { success: true, status: 'runStyleSelection' }
+      return { success: true, status: 'horseSelection' }
     } catch (error) {
       logger.error('startGame error', error)
       if (error instanceof HttpsError) {
@@ -475,36 +459,43 @@ export const startGame = onCall(
   },
 )
 
-const selectRunStyleSchema = z.object({
+const selectHorseSchema = z.object({
   roomId: z.string().min(1, 'roomId is required'),
   playerId: z.string().min(1, 'playerId is required'),
-  runStyle: z.enum(['paceSetter', 'frontRunner', 'stalker', 'closer']),
+  horseStats: z.object({
+    Speed: z.number().min(0),
+    Stamina: z.number().min(0),
+    Power: z.number().min(0),
+    Guts: z.number().min(0),
+    Start: z.number().min(0),
+    Luck: z.number().min(0),
+  }),
 })
 
-export const selectRunStyle = onCall(
+export const selectHorse = onCall(
   {
     region: 'asia-northeast3',
     cors: true,
   },
   async (request) => {
     try {
-      const parseResult = selectRunStyleSchema.safeParse(request.data)
+      const parseResult = selectHorseSchema.safeParse(request.data)
       if (!parseResult.success) {
         throw new HttpsError('invalid-argument', 'Invalid arguments', {
           errors: parseResult.error.flatten().fieldErrors,
         })
       }
 
-      const { roomId, playerId, runStyle } = parseResult.data
+      const { roomId, playerId, horseStats } = parseResult.data
 
       // 룸 존재 확인
       const room = await getRoom(roomId)
 
-      // 게임이 runStyleSelection 상태인지 확인
-      if (room.status !== 'runStyleSelection') {
+      // 게임이 horseSelection 상태인지 확인
+      if (room.status !== 'horseSelection') {
         throw new HttpsError(
           'failed-precondition',
-          'Run style can only be selected during runStyleSelection phase',
+          'Horse can only be selected during horseSelection phase',
         )
       }
 
@@ -516,32 +507,23 @@ export const selectRunStyle = onCall(
         throw new HttpsError('not-found', 'Player not found in room')
       }
 
-      const player = playerDoc.data() as Player & { availableRunStyles?: string[] }
+      const player = playerDoc.data() as Player
 
-      // 이미 습성을 선택했는지 확인
-      if (player.runStyle) {
+      // 이미 말을 선택했는지 확인
+      if (player.horseStats) {
         throw new HttpsError(
           'failed-precondition',
-          'Run style has already been selected for this player',
+          'Horse has already been selected for this player',
         )
       }
 
-      // 제시된 습성 목록에 선택한 습성이 있는지 확인
-      const availableRunStyles = player.availableRunStyles || []
-      if (!availableRunStyles.includes(runStyle)) {
-        throw new HttpsError(
-          'invalid-argument',
-          'Selected run style is not available for this player',
-        )
-      }
-
-      // 플레이어의 주행 습성 저장
+      // 플레이어의 말 스탯 저장
       await playerRef.update({
-        runStyle: runStyle as RunStyleId,
+        horseStats,
         updatedAt: Timestamp.now(),
       })
 
-      // 모든 플레이어가 습성을 선택했는지 확인
+      // 모든 플레이어가 말을 선택했는지 확인
       const playersSnapshot = await db
         .collection('rooms')
         .doc(roomId)
@@ -550,32 +532,99 @@ export const selectRunStyle = onCall(
 
       const allSelected = playersSnapshot.docs.every((doc) => {
         const player = doc.data() as Player
-        return player.runStyle !== undefined
+        return player.horseStats !== undefined
       })
 
       if (allSelected) {
         // 모든 플레이어가 선택 완료 → augmentSelection 단계로 전환
         await updateRoomStatus(roomId, 'augmentSelection')
 
-        logger.info('All players selected run style, moving to augment selection', {
+        logger.info('All players selected horse, moving to augment selection', {
           roomId,
           playerCount: playersSnapshot.size,
         })
       }
 
-      logger.info('Run style selected', { roomId, playerId, runStyle })
+      logger.info('Horse selected', { roomId, playerId, horseStats })
 
       return {
         success: true,
         allPlayersSelected: allSelected,
-        nextStatus: allSelected ? 'augmentSelection' : 'runStyleSelection',
+        nextStatus: allSelected ? 'augmentSelection' : 'horseSelection',
       }
     } catch (error) {
-      logger.error('selectRunStyle error', error)
+      logger.error('selectHorse error', error)
       if (error instanceof HttpsError) {
         throw error
       }
-      throw new HttpsError('internal', 'Failed to select run style')
+      throw new HttpsError('internal', 'Failed to select horse')
+    }
+  },
+)
+
+// ==================== 최종 결과 ====================
+
+const submitFinalRaceResultSchema = z.object({
+  roomId: z.string().min(1, 'roomId is required'),
+  finalRankings: z.array(
+    z.object({
+      rank: z.number().int().min(1),
+      name: z.string().min(1),
+      totalScore: z.number().min(0),
+      roundResults: z.array(
+        z
+          .object({
+            rank: z.number().int().min(1),
+            name: z.string().min(1),
+            time: z.number().min(0),
+            finished: z.boolean(),
+          })
+          .nullable(),
+      ),
+    }),
+  ),
+})
+
+export const submitFinalRaceResult = onCall(
+  {
+    region: 'asia-northeast3',
+    cors: true,
+  },
+  async (request) => {
+    try {
+      const parseResult = submitFinalRaceResultSchema.safeParse(request.data)
+      if (!parseResult.success) {
+        throw new HttpsError('invalid-argument', 'Invalid arguments', {
+          errors: parseResult.error.flatten().fieldErrors,
+        })
+      }
+
+      const { roomId, finalRankings } = parseResult.data
+
+      // 룸 존재 확인
+      const room = await getRoom(roomId)
+
+      // 룸 상태를 finished로 변경
+      await updateRoomStatus(roomId, 'finished')
+
+      // 최종 결과를 룸 문서에 저장
+      await db.collection('rooms').doc(roomId).update({
+        finalResult: {
+          finalRankings,
+          submittedAt: Timestamp.now(),
+        },
+        updatedAt: Timestamp.now(),
+      })
+
+      logger.info('Final race result submitted', { roomId, playerCount: finalRankings.length })
+
+      return { success: true }
+    } catch (error) {
+      logger.error('submitFinalRaceResult error', error)
+      if (error instanceof HttpsError) {
+        throw error
+      }
+      throw new HttpsError('internal', 'Failed to submit final race result')
     }
   },
 )

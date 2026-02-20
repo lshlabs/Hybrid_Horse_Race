@@ -2,10 +2,12 @@
 // 레이스 엔진 타입 정의
 // =========================
 
+import i18next from 'i18next'
+
 /**
  * 능력치 이름
  */
-export type StatName = 'Speed' | 'Stamina' | 'Power' | 'Guts' | 'Start' | 'Consistency'
+export type StatName = 'Speed' | 'Stamina' | 'Power' | 'Guts' | 'Start' | 'Luck'
 
 /**
  * 능력치 (6가지)
@@ -14,7 +16,7 @@ export type StatName = 'Speed' | 'Stamina' | 'Power' | 'Guts' | 'Start' | 'Consi
  * - Power: 가속력
  * - Guts: 피로 시 최소 속도 바닥
  * - Start: 초반 가속 + 출발 딜레이
- * - Consistency: 컨디션 롤 범위 (로또형 운빨)
+ * - Luck: 행운 롤 범위 (로또형 운빨)
  */
 export interface Stats {
   Speed: number
@@ -22,7 +24,7 @@ export interface Stats {
   Power: number
   Guts: number
   Start: number
-  Consistency: number
+  Luck: number
 }
 
 /**
@@ -70,15 +72,27 @@ export interface RaceOptions {
 export type AugmentRarity = 'common' | 'rare' | 'epic' | 'legendary' | 'hidden'
 
 /**
- * 증강 등급 한글 이름
+ * 증강 등급 이름 (i18next 사용)
+ * 함수로 감싸서 언어 변경 시 업데이트 가능하도록 함
  */
-export const AUGMENT_RARITY_NAMES: Record<AugmentRarity, string> = {
-  common: '일반',
-  rare: '레어',
-  epic: '영웅',
-  legendary: '전설',
-  hidden: '히든',
+export function getAugmentRarityName(rarity: AugmentRarity): string {
+  return i18next.t(`augment.rarity.${rarity}`)
 }
+
+/**
+ * 증강 등급 이름 전체 객체 반환 (호환성 유지)
+ */
+export const AUGMENT_RARITY_NAMES: Record<AugmentRarity, string> = new Proxy(
+  {} as Record<AugmentRarity, string>,
+  {
+    get(_target, prop: string | symbol) {
+      if (typeof prop === 'string') {
+        return getAugmentRarityName(prop as AugmentRarity)
+      }
+      return undefined
+    },
+  },
+)
 
 /**
  * 증강 타입 (어떤 능력치를 상승시키는지)
@@ -86,28 +100,50 @@ export const AUGMENT_RARITY_NAMES: Record<AugmentRarity, string> = {
 export type AugmentStatType = keyof Stats
 
 /**
- * 증강 능력치 한글 이름
+ * 증강 능력치 이름 (i18next 사용)
+ * 함수로 감싸서 언어 변경 시 업데이트 가능하도록 함
  */
-export const AUGMENT_STAT_NAMES: Record<AugmentStatType, string> = {
-  Speed: '최고속도',
-  Stamina: '지구력',
-  Power: '가속',
-  Guts: '근성',
-  Start: '출발',
-  Consistency: '일관성',
+export function getAugmentStatName(statType: AugmentStatType): string {
+  return i18next.t(`augment.stat.${statType}`)
 }
 
 /**
- * 증강 능력치 설명
+ * 증강 능력치 이름 전체 객체 반환 (호환성 유지)
  */
-export const AUGMENT_STAT_DESCRIPTIONS: Record<AugmentStatType, string> = {
-  Speed: '최대 속도 증가',
-  Stamina: '체력 소모율 감소',
-  Power: '가속도 향상',
-  Guts: '후반 속도 유지력 향상',
-  Start: '출발 속도 증가',
-  Consistency: '컨디션 변동폭 감소',
+export const AUGMENT_STAT_NAMES: Record<AugmentStatType, string> = new Proxy(
+  {} as Record<AugmentStatType, string>,
+  {
+    get(_target, prop: string | symbol) {
+      if (typeof prop === 'string') {
+        return getAugmentStatName(prop as AugmentStatType)
+      }
+      return undefined
+    },
+  },
+)
+
+/**
+ * 증강 능력치 설명 (i18next 사용)
+ * 함수로 감싸서 언어 변경 시 업데이트 가능하도록 함
+ */
+export function getAugmentStatDescription(statType: AugmentStatType): string {
+  return i18next.t(`augment.statDescription.${statType}`)
 }
+
+/**
+ * 증강 능력치 설명 전체 객체 반환 (호환성 유지)
+ */
+export const AUGMENT_STAT_DESCRIPTIONS: Record<AugmentStatType, string> = new Proxy(
+  {} as Record<AugmentStatType, string>,
+  {
+    get(_target, prop: string | symbol) {
+      if (typeof prop === 'string') {
+        return getAugmentStatDescription(prop as AugmentStatType)
+      }
+      return undefined
+    },
+  },
+)
 
 /**
  * 특수 능력 타입
@@ -115,22 +151,50 @@ export const AUGMENT_STAT_DESCRIPTIONS: Record<AugmentStatType, string> = {
 export type SpecialAbilityType = 'lastSpurt' | 'overtake' | 'escapeCrisis'
 
 /**
- * 특수 능력 이름
+ * 특수 능력 이름 (i18next 사용)
+ * 함수로 감싸서 언어 변경 시 업데이트 가능하도록 함
  */
-export const SPECIAL_ABILITY_NAMES: Record<SpecialAbilityType, string> = {
-  lastSpurt: '라스트 스퍼트',
-  overtake: '추월 보너스',
-  escapeCrisis: '위기 탈출',
+export function getSpecialAbilityName(abilityType: SpecialAbilityType): string {
+  return i18next.t(`augment.specialAbility.${abilityType}`)
 }
 
 /**
- * 특수 능력 설명
+ * 특수 능력 이름 전체 객체 반환 (호환성 유지)
  */
-export const SPECIAL_ABILITY_DESCRIPTIONS: Record<SpecialAbilityType, string> = {
-  lastSpurt: '라스트 스퍼트 발동',
-  overtake: '추월할 때마다 속도 증가 + 스태미나 회복(동일 말 중복 제외, 최대 7회)',
-  escapeCrisis: '4위 이하일 때 능력치 증가(게임당 1회)',
+export const SPECIAL_ABILITY_NAMES: Record<SpecialAbilityType, string> = new Proxy(
+  {} as Record<SpecialAbilityType, string>,
+  {
+    get(_target, prop: string | symbol) {
+      if (typeof prop === 'string') {
+        return getSpecialAbilityName(prop as SpecialAbilityType)
+      }
+      return undefined
+    },
+  },
+)
+
+/**
+ * 특수 능력 설명 (i18next 사용)
+ * 함수로 감싸서 언어 변경 시 업데이트 가능하도록 함
+ */
+export function getSpecialAbilityDescription(abilityType: SpecialAbilityType): string {
+  return i18next.t(`augment.specialAbilityDescription.${abilityType}`)
 }
+
+/**
+ * 특수 능력 설명 전체 객체 반환 (호환성 유지)
+ */
+export const SPECIAL_ABILITY_DESCRIPTIONS: Record<SpecialAbilityType, string> = new Proxy(
+  {} as Record<SpecialAbilityType, string>,
+  {
+    get(_target, prop: string | symbol) {
+      if (typeof prop === 'string') {
+        return getSpecialAbilityDescription(prop as SpecialAbilityType)
+      }
+      return undefined
+    },
+  },
+)
 
 /**
  * 증강 인터페이스

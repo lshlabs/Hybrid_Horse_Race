@@ -88,11 +88,11 @@ export async function getPlayerCount(roomId: string): Promise<number> {
 }
 
 /**
- * 호스트 확인
+ * 호스트 확인 (플레이어의 isHost 필드로 판별)
  */
 export async function isHost(roomId: string, playerId: string): Promise<boolean> {
-  const room = await getRoom(roomId)
-  return room.hostId === playerId
+  const player = await getPlayer(roomId, playerId)
+  return player?.isHost === true
 }
 
 /**
@@ -129,30 +129,37 @@ export async function areAllPlayersReady(roomId: string): Promise<boolean> {
 }
 
 /**
- * 초기 능력치 생성
- * speed: 60-120, stamina: 60-120, condition: 40-100, jockeySkill: 50-100
+ * 초기 능력치 생성 (실제 게임 엔진의 Stats 구조)
+ * 총합 80, 각 능력치 8부터 시작하여 나머지 32를 랜덤 분배
  */
 export function generateInitialStats(): {
-  speed: number
-  stamina: number
-  condition: number
-  jockeySkill: number
+  Speed: number
+  Stamina: number
+  Power: number
+  Guts: number
+  Start: number
+  Luck: number
 } {
-  return {
-    speed: Math.floor(Math.random() * 61) + 60, // 60-120
-    stamina: Math.floor(Math.random() * 61) + 60, // 60-120
-    condition: Math.floor(Math.random() * 61) + 40, // 40-100
-    jockeySkill: Math.floor(Math.random() * 51) + 50, // 50-100
+  const stats = {
+    Speed: 8,
+    Stamina: 8,
+    Power: 8,
+    Guts: 8,
+    Start: 8,
+    Luck: 8,
   }
+
+  const statNames: Array<keyof typeof stats> = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Luck']
+  let remaining = 80 - 6 * 8 // 32
+
+  while (remaining > 0) {
+    const randomIndex = Math.floor(Math.random() * statNames.length)
+    const key = statNames[randomIndex]
+    stats[key] += 1
+    remaining -= 1
+  }
+
+  return stats
 }
 
-/**
- * 랜덤 주행 습성 3개 선택
- * 4가지 습성 중 3개를 랜덤으로 선택
- */
-export function selectRandomRunStyles(): string[] {
-  const allStyles: string[] = ['paceSetter', 'frontRunner', 'stalker', 'closer']
-  const shuffled = [...allStyles].sort(() => Math.random() - 0.5)
-  return shuffled.slice(0, 3)
-}
 

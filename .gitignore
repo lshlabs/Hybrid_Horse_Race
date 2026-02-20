@@ -3,6 +3,9 @@ node_modules
 dist
 .DS_Store
 
+# Test directories
+map-test/
+
 # Environment files
 .env
 .env.*

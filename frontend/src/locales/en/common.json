@@ -1,89 +1,243 @@
 {
   "appTitle": "Hybrid Horse Race",
-  "appDescription": "Share the invite link and start racing with friends in seconds.",
+  "appDescription": "A simple horse racing game of choice and chance",
   "controls": {
     "participants": {
-      "label": "Participants",
-      "helper": "Supports up to {{count}} players"
+      "label": "Players",
+      "helper": "Up to {{count}} players"
     },
     "sets": {
-      "label": "Set Count",
-      "helper": "Supports up to {{count}} sets"
+      "label": "Rounds",
+      "helper": "Up to {{count}} rounds"
     },
     "reroll": {
       "label": "Augment Rerolls",
-      "helper": "Available rerolls"
+      "helper": "Reroll augment choices"
     }
   },
   "invite": {
-    "title": "Invite friends with a shareable URL",
-    "copy": "Copy"
+    "title": "Share URL to invite players"
   },
   "navigation": {
-    "toRunStyle": "Go to Horse Selection",
-    "toLobby": "Go to Lobby"
+    "toLobby": "Create Lobby",
+    "creating": "Creating room...",
+    "createFailed": "Failed to create room."
   },
   "lobby": {
-    "title": "Lobby Status",
+    "title": "Lobby",
     "subtitle": "Check readiness and start the race when everyone is ready.",
     "host": "Host",
     "me": "Me",
     "status": {
       "ready": "Ready",
+      "preparing": "Preparing",
       "waiting": "Connecting"
     },
-    "backToLanding": "Back to Setup",
-    "chooseRunStyle": "Proceed to Horse Selection",
-    "editRunStyle": "Change Selected Horse",
     "playerName": "Player {{index}}",
-    "selectedRunStyle": "Selected Run Style: {{runStyle}}",
-    "selectedHorse": "Selected Horse: {{horseName}}",
-    "emptySlot": "Empty Slot",
     "emptySlotStatus": "Awaiting Player",
     "invite": "Share URL to invite players",
-    "startReady": "All Ready! Start Race",
     "startWaiting": "Start when everyone is ready",
     "startGame": "Start Game",
-    "startGameWaiting": "Waiting for host to start"
+    "readyToggle": "Ready",
+    "readyCancel": "Cancel Ready",
+    "processing": "Processing...",
+    "starting": "Starting game...",
+    "readyToggleFailed": "Failed to toggle ready status.",
+    "startFailed": "Failed to start game.",
+    "copy": "Copy",
+    "urlShow": "Show URL",
+    "urlHide": "Hide URL",
+    "editName": "Edit Name",
+    "editNameDescription": "You can change the player name.",
+    "playerNamePlaceholder": "Player name"
   },
-  "runStyle": {
-    "title": "Horse Selection",
-    "headline": "Choose Your Horse",
-    "subtitle": "",
-    "rerollRemaining": "{{count}} reroll left",
-    "confirm": "Ride with this Horse",
-    "cancel": "Back to Setup",
-    "options": {
-      "paceSetter": {
-        "name": "",
-        "tagline": "Sprint from the horn",
-        "description": "Seizes the lead immediately and tries to run away with the race. If stamina management fails, the late fade can be dramatic."
-      },
-      "frontRunner": {
-        "name": "",
-        "tagline": "Steady pressure up front",
-        "description": "Keeps a top position and dictates the pace. The key is picking the right moment to accelerate in the mid game."
-      },
-      "stalker": {
-        "name": "",
-        "tagline": "Measured pursuit",
-        "description": "Tracks the leaders from mid-pack and waits for the perfect opening. Requires keen judgment and rhythm control."
-      },
-      "closer": {
-        "name": "",
-        "tagline": "Explosive late kick",
-        "description": "Builds energy for a final burst. Devastating when the pack collapses or a gap appears in the stretch."
-      }
+  "common": {
+    "cancel": "Cancel",
+    "save": "Save"
+  },
+  "pwa": {
+    "install": "Install",
+    "tooltip": "Install for a better gaming experience",
+    "ios": {
+      "title": "Install on Safari (iOS):",
+      "step1": "Tap the",
+      "step1Action": "at the bottom",
+      "step2": "Share",
+      "step3": "Add to Home Screen",
+      "select": "Select",
+      "info": "Installation is only available in Safari. Please open in Safari if using Chrome or other browsers."
     },
-    "horseNames": {
-      "paceSetter": ["James", "Blaze", "Rapidfire", "Lightning", "Wild Fang"],
-      "frontRunner": ["Hank", "Frontier", "Skywalk", "Ace", "Windy"],
-      "stalker": ["Midnight", "Focus", "Tension", "Silhouette", "Night Runner"],
-      "closer": ["Final Burst", "Hurricane", "Breakaway", "Last Shot", "Tempest"]
+    "android": {
+      "title": "Install on Chrome (Android):",
+      "step1": "Tap the",
+      "step1Action": "at the bottom",
+      "step2": "Add to Home Screen",
+      "select": "Select",
+      "info": "Chrome browser may automatically display an install prompt."
     }
   },
-  "race": {
+  "horseSelection": {
+    "title": "Horse Selection",
+    "headline": "Choose Your Horse",
+    "subtitle": "Choose one of 3 horses. You can reroll up to {{count}} times.",
+    "reroll": "Reroll",
+    "rerollCount": "Reroll ({{used}}/{{max}})",
+    "confirm": "Confirm",
+    "processing": "Processing...",
+    "totalStats": "Total Stats: {{totalStats}}",
+    "rerollMaxError": "You can reroll up to {{count}} times.",
+    "roomIdMissing": "Room ID is missing.",
+    "selectFailed": "Failed to select horse."
+  },
+  "raceResult": {
+    "title": "Final Results",
+    "subtitle": "Final rankings from {{count}} rounds",
+    "detailedResults": "Detailed Results",
+    "rank": "Rank",
+    "name": "Name",
+    "totalScore": "Total Score",
+    "round": "R{{number}}",
+    "points": "{{score}} pts",
+    "seconds": "{{time}}s",
+    "dnf": "DNF",
+    "backToHome": "Back to Home"
+  },
+  "stats": {
+    "speed": "Speed",
+    "stamina": "Stamina",
+    "power": "Power",
+    "guts": "Guts",
+    "start": "Start",
+    "luck": "Luck"
+  },
+  "statsShort": {
+    "speed": "Speed",
+    "stamina": "Stamina",
+    "power": "Power",
+    "guts": "Guts",
+    "start": "Start",
+    "luck": "Luck"
+  },
+  "game": {
+    "rank": "{{rank}}",
+    "seconds": "{{time}}s",
+    "health": "HP : {{current}} / {{max}}",
+    "conditionBonus": "Luck : {{bonus}}%",
+    "raceTime": "⏱️ {{time}}s",
+    "dnf": "❌ DNF",
+    "noAugment": "No Augment",
+    "ready": "Ready",
+    "waiting": "Waiting ({{current}}/{{total}})",
+    "viewFinalResult": "View Final Results",
+    "augmentSelection": "Select Augment",
+    "tapToStartRoulette": "Click to start game",
     "skip": "Skip",
-    "viewResults": "View Results"
+    "reroll": "Reroll ({{remaining}}/{{max}})",
+    "select": "Select",
+    "speed": "Speed",
+    "stamina": "Stamina",
+    "power": "Power",
+    "guts": "Guts",
+    "start": "Start",
+    "luck": "Luck",
+    "currentSpeed": "Speed : {{current}} / {{max}} km/h",
+    "waitingAfterAugment": "Waiting for other players...",
+    "gatheringResults": "Gathering results...",
+    "waitingAfterResult": "Waiting for other players..."
+  },
+  "nickname": {
+    "adjectives": [
+      "Sleepy",
+      "Hungry",
+      "Quiet",
+      "Fast",
+      "Slow",
+      "Gentle",
+      "Brave",
+      "Excited",
+      "Calm",
+      "Cute",
+      "Dizzy",
+      "Smart",
+      "Lazy",
+      "Diligent",
+      "Tiny",
+      "Giant",
+      "Shiny",
+      "Awkward",
+      "Happy"
+    ],
+    "nouns": [
+      "Cat",
+      "Dog",
+      "Penguin",
+      "Seal",
+      "Raccoon",
+      "Bear",
+      "Fox",
+      "Potato",
+      "Rabbit",
+      "Squirrel",
+      "Duck",
+      "Robot",
+      "Fairy",
+      "Knight",
+      "Hamster",
+      "Otter",
+      "Hedgehog",
+      "Beaver"
+    ]
+  },
+  "augment": {
+    "rarity": {
+      "common": "Common",
+      "rare": "Rare",
+      "epic": "Epic",
+      "legendary": "Legendary",
+      "hidden": "Hidden"
+    },
+    "stat": {
+      "Speed": "Speed",
+      "Stamina": "Stamina",
+      "Power": "Power",
+      "Guts": "Guts",
+      "Start": "Start",
+      "Luck": "Luck"
+    },
+    "statDescription": {
+      "Speed": "Increases max speed",
+      "Stamina": "Reduces stamina drain",
+      "Power": "Improves acceleration",
+      "Guts": "Maintains late-race speed",
+      "Start": "Boosts starting speed",
+      "Luck": "Random stat bonus effect"
+    },
+    "specialAbility": {
+      "lastSpurt": "Last Spurt",
+      "overtake": "Overtake Bonus",
+      "escapeCrisis": "Crisis Escape"
+    },
+    "specialAbilityDescription": {
+      "lastSpurt": "Activates last spurt",
+      "overtake": "Speed boost + stamina recovery per overtake (max 7 times)",
+      "escapeCrisis": "Stat boost when 4th place or lower (once per game)"
+    }
+  },
+  "horseNames": {
+    "whirlwind": "Whirlwind",
+    "mir": "Mir",
+    "afterglow": "Afterglow",
+    "wing": "Wing",
+    "gale": "Gale",
+    "blueCloud": "BlueCloud",
+    "lightning": "Lightning",
+    "morningStar": "Morning Star",
+    "whiteSnow": "WhiteSnow",
+    "summit": "Summit",
+    "galaxy": "Galaxy",
+    "soar": "Soar",
+    "sun": "Sun",
+    "torrent": "Torrent",
+    "thunder": "Thunder"
   }
 }

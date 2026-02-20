@@ -1,89 +1,243 @@
 {
   "appTitle": "하이브리드 경마 레이스",
-  "appDescription": "초대 링크를 공유해 친구들과 빠르게 경주를 시작하세요.",
+  "appDescription": "선택과 운이 섞인 간단한 경마 게임",
   "controls": {
     "participants": {
-      "label": "참가자 수",
-      "helper": "최대 {{count}}명까지 입장 가능합니다"
+      "label": "플레이어 수",
+      "helper": "최대 {{count}}명"
     },
     "sets": {
-      "label": "세트 수",
-      "helper": "최대 {{count}}세트까지 지원합니다"
+      "label": "라운드 수",
+      "helper": "최대 {{count}}라운드"
     },
     "reroll": {
       "label": "증강 새로고침",
-      "helper": "사용 가능한 새로고침 횟수"
+      "helper": "증강 선택을 다시 뽑아요"
     }
   },
   "invite": {
-    "title": "URL을 공유하여 초대하기",
-    "copy": "복사"
+    "title": "URL을 공유하여 초대하기"
   },
   "navigation": {
-    "toRunStyle": "말 선택으로 이동",
-    "toLobby": "로비로 이동"
+    "toLobby": "로비 생성",
+    "creating": "룸 생성 중...",
+    "createFailed": "룸 생성에 실패했습니다."
   },
   "lobby": {
-    "title": "플레이어 준비 현황",
+    "title": "대기실",
     "subtitle": "준비 상태를 확인하고 모두 준비되면 경주를 시작하세요.",
     "host": "호스트",
     "me": "나",
     "status": {
       "ready": "준비 완료",
+      "preparing": "준비 중",
       "waiting": "연결 대기"
     },
-    "backToLanding": "게임설정으로 돌아가기",
-    "chooseRunStyle": "말 선택 단계로 이동",
-    "editRunStyle": "말 다시 선택하기",
     "playerName": "플레이어 {{index}}",
-    "selectedRunStyle": "선택한 주행 습성: {{runStyle}}",
-    "selectedHorse": "선택한 말: {{horseName}}",
-    "emptySlot": "빈 슬롯",
     "emptySlotStatus": "참가 대기",
     "invite": "URL을 공유하여 초대하기",
-    "startReady": "모두 준비 완료! 경주 시작",
     "startWaiting": "모두 준비 완료되면 시작할 수 있어요",
     "startGame": "게임 시작",
-    "startGameWaiting": "게임 시작 대기중"
+    "readyToggle": "준비하기",
+    "readyCancel": "준비 취소",
+    "processing": "처리 중...",
+    "starting": "게임 시작 중...",
+    "readyToggleFailed": "준비 상태 변경에 실패했습니다.",
+    "startFailed": "게임 시작에 실패했습니다.",
+    "copy": "복사",
+    "urlShow": "URL 보이기",
+    "urlHide": "URL 숨기기",
+    "editName": "이름 수정",
+    "editNameDescription": "플레이어 이름을 변경할 수 있습니다.",
+    "playerNamePlaceholder": "플레이어 이름"
   },
-  "runStyle": {
-    "title": "말 선택 단계",
-    "headline": "함께 할 말을 선택하세요",
-    "subtitle": "",
-    "rerollRemaining": "{{count}} 번 리롤 가능",
-    "confirm": "이 말과 함께하기",
-    "cancel": "로비 설정으로 돌아가기",
-    "options": {
-      "paceSetter": {
-        "name": "",
-        "tagline": "초반부터 전력 질주",
-        "description": "가장 빠르게 선두를 차지해 상대를 따돌립니다. 지구력 관리를 실패하면 후반에 급격히 무너질 수 있습니다."
-      },
-      "frontRunner": {
-        "name": "",
-        "tagline": "안정적인 선두권 운영",
-        "description": "초반부터 상위권을 유지하며 페이스를 조절합니다. 중반 이후 가속 타이밍 관리가 승패를 좌우합니다."
-      },
-      "stalker": {
-        "name": "",
-        "tagline": "호흡을 맞춰 달리는 전략가",
-        "description": "중단에서 에너지를 아끼다 막판에 추월을 노립니다. 상황 판단과 페이스 컨트롤이 중요합니다."
-      },
-      "closer": {
-        "name": "",
-        "tagline": "폭발적인 막판 질주",
-        "description": "후반 스퍼트가 강력한 타입입니다. 앞선이 무너지거나 틈이 생겼을 때 최고의 위력을 발휘합니다."
-      }
+  "common": {
+    "cancel": "취소",
+    "save": "저장"
+  },
+  "pwa": {
+    "install": "설치",
+    "tooltip": "쾌적한 플레이를 위해 설치해보세요",
+    "ios": {
+      "title": "Safari (iOS)에서 설치하기:",
+      "step1": "하단의",
+      "step1Action": "탭",
+      "step2": "공유하기",
+      "step3": "홈 화면에 추가",
+      "select": "선택",
+      "info": "Safari에서만 설치 가능합니다. Chrome 등 다른 브라우저에서는 Safari로 열어주세요."
     },
-    "horseNames": {
-      "paceSetter": ["제임스", "썬더", "블레이즈", "라이트닝", "와일드 팽"],
-      "frontRunner": ["행크", "프론티어", "스카이워크", "에이스", "윈디"],
-      "stalker": ["미드나잇", "포커스", "텐션", "실루엣", "나이트러너"],
-      "closer": ["파이널 스퍼트", "허리케인", "브레이크어웨이", "라스트샷", "돌풍"]
+    "android": {
+      "title": "Chrome (Android)에서 설치하기:",
+      "step1": "하단의",
+      "step1Action": "탭",
+      "step2": "홈 화면에 추가",
+      "select": "선택",
+      "info": "Chrome 브라우저에서 자동으로 설치 프롬프트가 표시될 수도 있습니다."
     }
   },
-  "race": {
+  "horseSelection": {
+    "title": "말 선택",
+    "headline": "말을 선택하세요",
+    "subtitle": "3마리의 말 중 하나를 선택하세요. 리롤은 최대 {{count}}번까지 가능합니다.",
+    "reroll": "리롤",
+    "rerollCount": "리롤 ({{used}}/{{max}})",
+    "confirm": "확인",
+    "processing": "처리 중...",
+    "totalStats": "총 능력치: {{totalStats}}",
+    "rerollMaxError": "리롤은 최대 {{count}}번까지 가능합니다.",
+    "roomIdMissing": "룸 ID가 없습니다.",
+    "selectFailed": "말 선택에 실패했습니다."
+  },
+  "raceResult": {
+    "title": "최종 결과",
+    "subtitle": "{{count}}라운드의 결과를 종합한 최종 순위입니다",
+    "detailedResults": "상세 결과",
+    "rank": "순위",
+    "name": "이름",
+    "totalScore": "총점",
+    "round": "R{{number}}",
+    "points": "{{score}}점",
+    "seconds": "{{time}}초",
+    "dnf": "미완주",
+    "backToHome": "홈으로 돌아가기"
+  },
+  "stats": {
+    "speed": "속도",
+    "stamina": "지구력",
+    "power": "가속",
+    "guts": "근성",
+    "start": "출발",
+    "luck": "행운"
+  },
+  "statsShort": {
+    "speed": "속도",
+    "stamina": "지구력",
+    "power": "가속",
+    "guts": "근성",
+    "start": "출발",
+    "luck": "행운"
+  },
+  "game": {
+    "rank": "{{rank}}위",
+    "seconds": "{{time}}초",
+    "health": "체력 : {{current}} / {{max}}",
+    "conditionBonus": "행운 보너스 : {{bonus}}%",
+    "raceTime": "⏱️ {{time}}초",
+    "dnf": "❌ 미완주",
+    "noAugment": "증강 없음",
+    "ready": "준비",
+    "waiting": "대기 중 ({{current}}/{{total}})",
+    "viewFinalResult": "최종 결과 보기",
+    "augmentSelection": "증강 선택",
+    "tapToStartRoulette": "클릭하여 게임 시작",
     "skip": "스킵",
-    "viewResults": "결과 보기"
+    "reroll": "리롤 ({{remaining}}/{{max}})",
+    "select": "선택",
+    "speed": "속도",
+    "stamina": "지구력",
+    "power": "가속",
+    "guts": "근성",
+    "start": "출발",
+    "luck": "행운",
+    "currentSpeed": "속도 : {{current}} / {{max}} km/h",
+    "waitingAfterAugment": "다른 플레이어 기다리는 중...",
+    "gatheringResults": "결과 집계중...",
+    "waitingAfterResult": "다른 플레이어 대기 중..."
+  },
+  "nickname": {
+    "adjectives": [
+      "졸린",
+      "배고픈",
+      "조용한",
+      "빠른",
+      "느린",
+      "순한",
+      "용감한",
+      "신난",
+      "차분한",
+      "귀여운",
+      "멍한",
+      "똑똑한",
+      "게으른",
+      "성실한",
+      "작은",
+      "커다란",
+      "빛나는",
+      "어색한",
+      "행복한"
+    ],
+    "nouns": [
+      "고양이",
+      "강아지",
+      "펭귄",
+      "물개",
+      "너구리",
+      "곰",
+      "여우",
+      "감자",
+      "토끼",
+      "다람쥐",
+      "오리",
+      "로봇",
+      "요정",
+      "기사",
+      "햄스터",
+      "수달",
+      "고슴도치",
+      "비버"
+    ]
+  },
+  "augment": {
+    "rarity": {
+      "common": "일반",
+      "rare": "레어",
+      "epic": "영웅",
+      "legendary": "전설",
+      "hidden": "히든"
+    },
+    "stat": {
+      "Speed": "속도",
+      "Stamina": "지구력",
+      "Power": "가속",
+      "Guts": "근성",
+      "Start": "출발",
+      "Luck": "행운"
+    },
+    "statDescription": {
+      "Speed": "최대 속도 증가",
+      "Stamina": "체력 소모율 감소",
+      "Power": "가속도 향상",
+      "Guts": "후반 속도 유지력 향상",
+      "Start": "출발 속도 증가",
+      "Luck": "랜덤 능력치 보너스"
+    },
+    "specialAbility": {
+      "lastSpurt": "라스트 스퍼트",
+      "overtake": "추월 보너스",
+      "escapeCrisis": "위기 탈출"
+    },
+    "specialAbilityDescription": {
+      "lastSpurt": "라스트 스퍼트 발동",
+      "overtake": "추월할 때마다 속도 증가 + 스태미나 회복(동일 말 중복 제외, 최대 7회)",
+      "escapeCrisis": "4위 이하일 때 능력치 증가(게임당 1회)"
+    }
+  },
+  "horseNames": {
+    "whirlwind": "돌개",
+    "mir": "미르",
+    "afterglow": "노을",
+    "wing": "나래",
+    "gale": "돌풍",
+    "blueCloud": "청운",
+    "lightning": "번개",
+    "morningStar": "샛별",
+    "whiteSnow": "백설",
+    "summit": "마루",
+    "galaxy": "은하",
+    "soar": "비상",
+    "sun": "태양",
+    "torrent": "급류",
+    "thunder": "천둥"
   }
 }

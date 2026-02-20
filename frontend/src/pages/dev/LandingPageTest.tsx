@@ -8,16 +8,18 @@
  * 3. 룸 생성 기능 테스트 (Mock 데이터 사용)
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { Users, Flag, RefreshCw, Plus, Minus } from 'lucide-react'
 import { getUserId } from '../../lib/user-id'
+import { clearDevTestStorage } from '../../lib/dev-storage'
 
-const MIN_SET_COUNT = 1
-const MAX_SET_COUNT = 5
+const MIN_ROUND_COUNT = 1
+const MAX_ROUND_COUNT = 3
 
-const MIN_PARTICIPANT_COUNT = 2
-const MAX_PARTICIPANT_COUNT = 8
+const MIN_PLAYER_COUNT = 2
+const MAX_PLAYER_COUNT = 8
 
 const MIN_REROLL_COUNT = 0
 const MAX_REROLL_COUNT = 5
@@ -27,14 +29,12 @@ export function LandingPageTest() {
   const navigate = useNavigate()
   const isDev = import.meta.env.DEV
 
-  const [setCount, setSetCount] = useState(3)
-  const [participantCount, setParticipantCount] = useState(4)
-  const [rerollCount, setRerollCount] = useState(2)
-  const [isCopied, setIsCopied] = useState(false)
-  const [isUrlVisible, setIsUrlVisible] = useState(false)
+  const [playerCount, setPlayerCount] = useState(4)
+  const [roundCount, setRoundCount] = useState(3)
+  const [rerollCount, setRerollCount] = useState(3)
   const [isCreating, setIsCreating] = useState(false)
-  const [roomId, setRoomId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [isBannerCollapsed, setIsBannerCollapsed] = useState(true)
 
   useEffect(() => {
     if (!isDev) {
@@ -42,18 +42,10 @@ export function LandingPageTest() {
     }
   }, [isDev, navigate])
 
-  const inviteUrl = useMemo(() => {
-    if (!roomId) return ''
-    const baseUrl = window.location.origin
-    return `${baseUrl}/lobby-test?roomId=${roomId}`
-  }, [roomId])
-
-  const decrease = () => setSetCount((prev) => Math.max(prev - 1, MIN_SET_COUNT))
-  const increase = () => setSetCount((prev) => Math.min(prev + 1, MAX_SET_COUNT))
-  const decreaseParticipants = () =>
-    setParticipantCount((prev) => Math.max(prev - 1, MIN_PARTICIPANT_COUNT))
-  const increaseParticipants = () =>
-    setParticipantCount((prev) => Math.min(prev + 1, MAX_PARTICIPANT_COUNT))
+  const decreaseRounds = () => setRoundCount((prev) => Math.max(prev - 1, MIN_ROUND_COUNT))
+  const increaseRounds = () => setRoundCount((prev) => Math.min(prev + 1, MAX_ROUND_COUNT))
+  const decreasePlayers = () => setPlayerCount((prev) => Math.max(prev - 1, MIN_PLAYER_COUNT))
+  const increasePlayers = () => setPlayerCount((prev) => Math.min(prev + 1, MAX_PLAYER_COUNT))
   const decreaseReroll = () => setRerollCount((prev) => Math.max(prev - 1, MIN_REROLL_COUNT))
   const increaseReroll = () => setRerollCount((prev) => Math.min(prev + 1, MAX_REROLL_COUNT))
 
@@ -68,49 +60,31 @@ export function LandingPageTest() {
     await new Promise((resolve) => setTimeout(resolve, 500))
 
     try {
-      const hostId = getUserId()
+      const playerId = getUserId()
       // Mock roomId 생성
       const newRoomId = `test-room-${Date.now()}`
 
-      console.log('[LandingPageTest] Creating mock room:', {
-        hostId,
-        setCount,
+      // 게임 설정을 localStorage에 저장 (개선 사항 3)
+      const roomConfig = {
+        playerCount,
+        roundCount,
         rerollLimit: rerollCount,
-        roomId: newRoomId,
-      })
+      }
+      localStorage.setItem('dev_room_config', JSON.stringify(roomConfig))
 
-      setRoomId(newRoomId)
+      // playerId를 localStorage에 저장 (개선 사항 7)
+      localStorage.setItem('dev_player_id', playerId)
 
-      // 테스트 페이지로 이동 (룸 설정 정보 포함)
+      // 테스트 페이지로 이동 (roomId와 playerId만 전달)
       const params = new URLSearchParams({
         roomId: newRoomId,
-        participantCount: participantCount.toString(),
-        setCount: setCount.toString(),
-        rerollLimit: rerollCount.toString(),
-      })
-      console.log('[LandingPageTest] Navigating to lobby-test with params:', {
-        roomId: newRoomId,
-        participantCount,
-        setCount,
-        rerollLimit: rerollCount,
+        playerId, // playerId 전달 추가
       })
       navigate(`/lobby-test?${params.toString()}`)
     } catch (err) {
       console.error('Failed to create room:', err)
-      setError('룸 생성에 실패했습니다.')
+      setError(t('navigation.createFailed'))
       setIsCreating(false)
-    }
-  }
-
-  const handleCopy = async () => {
-    if (!inviteUrl) return
-
-    try {
-      await navigator.clipboard.writeText(inviteUrl)
-      setIsCopied(true)
-      setTimeout(() => setIsCopied(false), 2000)
-    } catch (error) {
-      console.error('초대 링크 복사에 실패했습니다.', error)
     }
   }
 
@@ -125,127 +99,131 @@ export function LandingPageTest() {
   }
 
   return (
-    <div
-      className="flex h-screen w-screen flex-col overflow-hidden"
-      style={{ backgroundColor: '#1a1a2e' }}
-    >
+    <div className="flex w-full flex-1 flex-col items-center justify-center">
       {/* 개발용 안내 */}
-      <div className="fixed top-0 left-0 right-0 z-50 bg-black/80 p-4 text-white">
-        <div className="mx-auto max-w-7xl">
-          <h2 className="mb-2 text-lg font-bold">🧪 랜딩 페이지 테스트 모드</h2>
-          <div className="flex flex-wrap items-center gap-4 text-sm">
-            <p className="text-gray-300">
-              개발 모드에서는 Firebase 연결 없이도 룸 생성 기능을 테스트할 수 있습니다. 룸 생성 시
-              Mock roomId가 생성되어 로비 테스트 페이지로 이동합니다.
-            </p>
-            {roomId && (
-              <div>
-                <span className="text-gray-400">생성된 Room ID: </span>
-                <span className="font-mono">{roomId}</span>
-              </div>
-            )}
+      {isBannerCollapsed ? (
+        /* 접었을 때: 펼치기 버튼만 표시 */
+        <button
+          onClick={() => setIsBannerCollapsed(false)}
+          className="fixed top-2 left-2 z-50 rounded-lg bg-black/80 px-3 py-2 text-white backdrop-blur-sm transition hover:bg-black/90 shadow-lg"
+        >
+          <span className="text-sm">▼ 개발 배너</span>
+        </button>
+      ) : (
+        /* 펼쳤을 때: 전체 배너 표시 */
+        <div className="fixed top-0 left-0 right-0 z-50 bg-black/80 p-4 text-white">
+          <div className="mx-auto max-w-7xl">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold">🧪 랜딩 페이지 테스트 모드</h2>
+              <button
+                onClick={() => setIsBannerCollapsed(true)}
+                className="ml-4 rounded bg-gray-700/50 px-3 py-1 text-sm transition hover:bg-gray-700/70"
+              >
+                ▲
+              </button>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
+              <button
+                onClick={() => {
+                  clearDevTestStorage()
+                  navigate('/landing-test')
+                }}
+                className="rounded bg-blue-600 px-3 py-1 text-sm hover:bg-blue-700"
+              >
+                🔄 처음부터 다시 테스트
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* 실제 LandingPage UI (독립적으로 구현) */}
-      <div className="flex flex-1 items-center justify-center pt-20">
+      <div className="flex w-full flex-1 items-center justify-center">
         <div className="w-full max-w-md rounded-3xl border border-white/10 bg-surface/80 p-4 sm:p-8 shadow-surface backdrop-blur-lg">
           <header className="text-center">
-            <h1 className="mt-3 text-3xl font-display text-neutral-50">{t('appTitle')}</h1>
-            <p className="mt-3 text-sm leading-relaxed text-neutral-300">{t('appDescription')}</p>
+            <h1 className="mt-3 text-3xl font-display text-foreground">{t('appTitle')}</h1>
+            <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+              {t('appDescription')}
+            </p>
           </header>
 
           <section className="mt-10 space-y-6">
             <div className="flex items-center justify-between gap-2 sm:gap-3 rounded-2xl bg-surface-muted/70 px-3 sm:px-5 py-3 sm:py-4">
               <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-                <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-xl text-primary">
-                  👥
+                <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-primary">
+                  <Users className="h-5 w-5" />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-neutral-100 truncate">
+                  <p className="text-sm font-semibold text-foreground truncate">
                     {t('controls.participants.label')}
                   </p>
-                  <p className="text-xs text-neutral-400 line-clamp-1">
-                    {t('controls.participants.helper', { count: MAX_PARTICIPANT_COUNT })}
-                  </p>
                 </div>
               </div>
               <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
                 <button
                   type="button"
-                  disabled={participantCount <= MIN_PARTICIPANT_COUNT}
-                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-neutral-200 transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-neutral-200"
-                  onClick={decreaseParticipants}
-                  aria-label="참가자 수 감소"
+                  disabled={playerCount <= MIN_PLAYER_COUNT}
+                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-foreground transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-foreground"
+                  onClick={decreasePlayers}
                 >
-                  –
+                  <Minus className="h-4 w-4" />
                 </button>
-                <span className="min-w-[2rem] text-center text-xl font-bold text-neutral-50">
-                  {participantCount}
+                <span className="min-w-[2rem] text-center text-xl font-bold text-foreground">
+                  {playerCount}
                 </span>
                 <button
                   type="button"
-                  disabled={participantCount >= MAX_PARTICIPANT_COUNT}
-                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-neutral-200 transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-neutral-200"
-                  onClick={increaseParticipants}
-                  aria-label="참가자 수 증가"
+                  disabled={playerCount >= MAX_PLAYER_COUNT}
+                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-foreground transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-foreground"
+                  onClick={increasePlayers}
                 >
-                  +
+                  <Plus className="h-4 w-4" />
                 </button>
               </div>
             </div>
 
             <div className="flex items-center justify-between gap-2 sm:gap-3 rounded-2xl bg-surface-muted/70 px-3 sm:px-5 py-3 sm:py-4">
               <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-                <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-xl text-primary">
-                  ↻
+                <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-primary">
+                  <Flag className="h-5 w-5" />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-neutral-100 truncate">
+                  <p className="text-sm font-semibold text-foreground truncate">
                     {t('controls.sets.label')}
                   </p>
-                  <p className="text-xs text-neutral-400 line-clamp-1">
-                    {t('controls.sets.helper', { count: MAX_SET_COUNT })}
-                  </p>
                 </div>
               </div>
               <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
                 <button
                   type="button"
-                  disabled={setCount <= MIN_SET_COUNT}
-                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-neutral-200 transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-neutral-200"
-                  onClick={decrease}
-                  aria-label="세트 수 감소"
+                  disabled={roundCount <= MIN_ROUND_COUNT}
+                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-foreground transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-foreground"
+                  onClick={decreaseRounds}
                 >
-                  –
+                  <Minus className="h-4 w-4" />
                 </button>
-                <span className="min-w-[2rem] text-center text-xl font-bold text-neutral-50">
-                  {setCount}
+                <span className="min-w-[2rem] text-center text-xl font-bold text-foreground">
+                  {roundCount}
                 </span>
                 <button
                   type="button"
-                  disabled={setCount >= MAX_SET_COUNT}
-                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-neutral-200 transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-neutral-200"
-                  onClick={increase}
-                  aria-label="세트 수 증가"
+                  disabled={roundCount >= MAX_ROUND_COUNT}
+                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-foreground transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-foreground"
+                  onClick={increaseRounds}
                 >
-                  +
+                  <Plus className="h-4 w-4" />
                 </button>
               </div>
             </div>
 
             <div className="flex items-center justify-between gap-2 sm:gap-3 rounded-2xl bg-surface-muted/70 px-3 sm:px-5 py-3 sm:py-4">
               <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-                <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-xl text-primary">
-                  ♻️
+                <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-primary">
+                  <RefreshCw className="h-5 w-5" />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-neutral-100 truncate">
+                  <p className="text-sm font-semibold text-foreground truncate">
                     {t('controls.reroll.label')}
-                  </p>
-                  <p className="text-xs text-neutral-400 line-clamp-1">
-                    {t('controls.reroll.helper')}
                   </p>
                 </div>
               </div>
@@ -253,23 +231,21 @@ export function LandingPageTest() {
                 <button
                   type="button"
                   disabled={rerollCount <= MIN_REROLL_COUNT}
-                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-neutral-200 transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-neutral-200"
+                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-foreground transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-foreground"
                   onClick={decreaseReroll}
-                  aria-label="증강 새로고침 감소"
                 >
-                  –
+                  <Minus className="h-4 w-4" />
                 </button>
-                <span className="min-w-[2rem] text-center text-xl font-bold text-neutral-50">
+                <span className="min-w-[2rem] text-center text-xl font-bold text-foreground">
                   {rerollCount}
                 </span>
                 <button
                   type="button"
                   disabled={rerollCount >= MAX_REROLL_COUNT}
-                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-neutral-200 transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-neutral-200"
+                  className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full border border-white/10 text-lg text-foreground transition hover:border-white/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-white/10 disabled:hover:text-foreground"
                   onClick={increaseReroll}
-                  aria-label="증강 새로고침 증가"
                 >
-                  +
+                  <Plus className="h-4 w-4" />
                 </button>
               </div>
             </div>
@@ -279,111 +255,15 @@ export function LandingPageTest() {
                 {error}
               </div>
             )}
-
-            {roomId && (
-              <div className="space-y-3 rounded-2xl border border-dashed border-white/15 bg-white/5 p-5">
-                <p className="text-xs uppercase tracking-[0.35em] text-neutral-400">
-                  {t('invite.title')}
-                </p>
-                <div className="flex gap-2">
-                  <div className="flex flex-1 items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-background/80 px-4 py-3 text-sm text-neutral-200">
-                    <span className="block flex-1 truncate">
-                      {isUrlVisible ? inviteUrl : '••••••••••••••••••••••••••••••••'}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setIsUrlVisible(!isUrlVisible)}
-                      className="flex-shrink-0 text-neutral-400 transition hover:text-neutral-200"
-                      aria-label={isUrlVisible ? 'URL 숨기기' : 'URL 보이기'}
-                    >
-                      {isUrlVisible ? (
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          strokeWidth={1.5}
-                          stroke="currentColor"
-                          className="h-5 w-5"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"
-                          />
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                          />
-                        </svg>
-                      ) : (
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          strokeWidth={1.5}
-                          stroke="currentColor"
-                          className="h-5 w-5"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 01-4.243-4.243m4.242 4.242L9.88 9.88"
-                          />
-                        </svg>
-                      )}
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleCopy}
-                    className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-primary-foreground transition hover:bg-primary/80"
-                    aria-label="복사"
-                  >
-                    {isCopied ? (
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        strokeWidth={2}
-                        stroke="currentColor"
-                        className="h-5 w-5"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                        />
-                      </svg>
-                    ) : (
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        strokeWidth={1.5}
-                        stroke="currentColor"
-                        className="h-5 w-5"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184"
-                        />
-                      </svg>
-                    )}
-                  </button>
-                </div>
-              </div>
-            )}
           </section>
 
           <button
             type="button"
             onClick={handleCreateRoom}
             disabled={isCreating}
-            className="mt-10 w-full rounded-full bg-primary px-8 py-3 text-center text-base font-semibold text-primary-foreground shadow-neon transition hover:bg-primary/80 disabled:cursor-not-allowed disabled:opacity-50"
+            className="mt-10 w-full rounded-full bg-primary px-8 py-3 text-center text-base font-semibold text-white shadow-neon transition hover:bg-primary/80 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isCreating ? '룸 생성 중...' : t('navigation.toLobby')}
+            {isCreating ? t('navigation.creating') : t('navigation.toLobby')}
           </button>
         </div>
       </div>
