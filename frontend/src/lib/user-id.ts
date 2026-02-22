@@ -1,35 +1,120 @@
-/**
- * 사용자 ID 관리 (임시 localStorage 기반)
- * TODO: 실제 인증 시스템으로 교체
- */
+import { createGuestSession } from './firebase-functions'
 
-const USER_ID_KEY = 'hybrid-horse-race-user-id'
+const GUEST_SESSION_KEY = 'hybrid-horse-race-guest-session'
 
-/**
- * 사용자 ID 가져오기 (없으면 생성)
- */
-export function getUserId(): string {
-  let userId = localStorage.getItem(USER_ID_KEY)
+interface GuestSession {
+  guestId: string
+  sessionToken: string
+  expiresAtMillis: number
+}
 
-  if (!userId) {
-    // 새 사용자 ID 생성 (타임스탬프 + 랜덤)
-    userId = `user_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-    localStorage.setItem(USER_ID_KEY, userId)
+let bootstrapPromise: Promise<GuestSession> | null = null
+
+function readCachedSession(): GuestSession | null {
+  const raw = localStorage.getItem(GUEST_SESSION_KEY)
+  if (!raw) return null
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<GuestSession>
+    if (
+      typeof parsed.guestId !== 'string' ||
+      parsed.guestId.length === 0 ||
+      typeof parsed.sessionToken !== 'string' ||
+      parsed.sessionToken.length === 0 ||
+      typeof parsed.expiresAtMillis !== 'number' ||
+      !Number.isFinite(parsed.expiresAtMillis)
+    ) {
+      return null
+    }
+    return {
+      guestId: parsed.guestId,
+      sessionToken: parsed.sessionToken,
+      expiresAtMillis: parsed.expiresAtMillis,
+    }
+  } catch {
+    return null
   }
-
-  return userId
 }
 
-/**
- * 사용자 ID 설정
- */
-export function setUserId(userId: string): void {
-  localStorage.setItem(USER_ID_KEY, userId)
+function isSessionValid(session: GuestSession): boolean {
+  return session.expiresAtMillis > Date.now() + 60_000
 }
 
-/**
- * 사용자 ID 초기화
- */
-export function clearUserId(): void {
-  localStorage.removeItem(USER_ID_KEY)
+function cacheSession(session: GuestSession): void {
+  localStorage.setItem(GUEST_SESSION_KEY, JSON.stringify(session))
+}
+
+function shouldRefreshSession(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const maybe = error as { code?: string; message?: string }
+  if (maybe.code === 'functions/unauthenticated' || maybe.code === 'functions/not-found') {
+    return true
+  }
+  if (typeof maybe.message === 'string' && maybe.message.includes('Guest session')) {
+    return true
+  }
+  return false
+}
+
+async function requestSession(existingGuestId?: string): Promise<GuestSession> {
+  const response = await createGuestSession({ guestId: existingGuestId })
+  const nextSession: GuestSession = {
+    guestId: response.data.guestId,
+    sessionToken: response.data.sessionToken,
+    expiresAtMillis: response.data.expiresAtMillis,
+  }
+  cacheSession(nextSession)
+  return nextSession
+}
+
+export async function ensureUserSession(): Promise<GuestSession> {
+  if (bootstrapPromise) return bootstrapPromise
+
+  bootstrapPromise = (async () => {
+    const cached = readCachedSession()
+    if (cached && isSessionValid(cached)) {
+      return cached
+    }
+    return requestSession(cached?.guestId)
+  })()
+
+  try {
+    return await bootstrapPromise
+  } finally {
+    bootstrapPromise = null
+  }
+}
+
+export async function getUserId(): Promise<string> {
+  const session = await ensureUserSession()
+  return session.guestId
+}
+
+export async function getSessionToken(): Promise<string> {
+  const session = await ensureUserSession()
+  return session.sessionToken
+}
+
+export async function getGuestSession(): Promise<GuestSession> {
+  return ensureUserSession()
+}
+
+export async function clearUserId(): Promise<void> {
+  localStorage.removeItem(GUEST_SESSION_KEY)
+}
+
+export async function withGuestSessionRetry<T>(
+  operation: (session: GuestSession) => Promise<T>,
+): Promise<T> {
+  const currentSession = await ensureUserSession()
+  try {
+    return await operation(currentSession)
+  } catch (error) {
+    if (!shouldRefreshSession(error)) {
+      throw error
+    }
+    await clearUserId()
+    const freshSession = await ensureUserSession()
+    return operation(freshSession)
+  }
 }

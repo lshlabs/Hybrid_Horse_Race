@@ -154,6 +154,7 @@ export function RacePageTest() {
   // Mock Room 데이터 생성 (localStorage의 설정값 사용)
   const mockRoom: Room = {
     title: `테스트 룸 (${roomId})`,
+    maxPlayers: playerCount,
     roundCount,
     rerollLimit,
     rerollUsed: 0,

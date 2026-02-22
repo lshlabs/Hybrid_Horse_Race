@@ -1,6 +1,8 @@
 import Phaser from 'phaser'
 import { METERS_PER_TILE_M } from '../../../engine/race/trackConstants'
 
+// 타일 기반 트랙 맵을 그리는 매니저
+// 맵 길이(px) 계산과 "레이스 거리(m) <-> 타일 수" 기준도 같이 관리한다.
 /**
  * TileMapManager 설정 정보
  * 타일 기반 맵 로직 (grass/track/deco 타일로 구성)
@@ -116,7 +118,8 @@ export default class TileMapManager {
 
     this.mapWidth = seq.length * TILE
 
-    // 월드 X: S/E 왼쪽 경계. 실제 달리는 거리 = S왼쪽~E왼쪽 = [S]1 + [T]×raceTiles = (raceTiles+1)타일
+    // 월드 X는 타일 왼쪽 경계 기준으로 잡는다.
+    // 실제 달리는 거리도 S 왼쪽 ~ E 왼쪽 기준이라서 (raceTiles+1)타일 길이가 된다.
     this.trackStartWorldXPx = this.startTileIndex * TILE
     this.trackFinishWorldXPx = this.finishTileIndex * TILE
     this.trackLengthPx = (this.finishTileIndex - this.startTileIndex) * TILE
@@ -138,6 +141,7 @@ export default class TileMapManager {
     grassChunk: number[][]
     decoChunk: number[]
   } {
+    // 위/아래 잔디 줄을 한 청크로 묶어서 데코 개수를 같이 관리하면 패턴이 덜 반복적으로 보인다.
     const totalTiles = GRASS_ROWS * CHUNK_COLS
     const grassChunk: number[][] = []
     for (let row = 0; row < GRASS_ROWS; row++) {
@@ -166,6 +170,7 @@ export default class TileMapManager {
   private static readonly SKY_SCROLL_FACTORS = [0.15, 0.3, 0.45, 0.6] as const
 
   private buildBackgroundLayers(bgTheme: number): void {
+    // sky 배경은 tileSprite + scrollFactor로 패럴랙스만 주고, 실제 레이스 좌표에는 영향이 없다.
     const SKY_HEIGHT = 4 * this.rowHeight
     const layerKeys = [
       `bg${bgTheme}_t1`,
@@ -188,6 +193,7 @@ export default class TileMapManager {
     grassChunk: { grassChunk: number[][]; decoChunk: number[] },
     seq: string[],
   ): void {
+    // SKY/GRASS/TRACK 행 타입에 따라 그리는 타일이 달라진다.
     let grassRowIdx = 0
     let trackRowIdx = 0
     const decoBase = (row: number) => row * CHUNK_COLS

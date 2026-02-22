@@ -2,12 +2,11 @@ import Phaser from 'phaser'
 import i18next from 'i18next'
 import type { Augment, AugmentRarity } from '../../../../engine/race'
 import { AUGMENT_STAT_NAMES, SPECIAL_ABILITY_NAMES } from '../../../../engine/race'
-import { showWaitingOverlay } from '../../effects/showWaitingOverlay'
 import { createRoundedButton, type RoundedButtonController } from '../../ui/createRoundedButton'
 
 /**
- * 라운드 종료 후 순위를 보여주는 오버레이 씬.
- * RaceScene을 멈추지 않고 위에 launch되어, 확인 버튼 이후 다음 흐름으로 넘긴다.
+ * 라운드 종료 후 순위를 보여주는 오버레이 씬
+ * RaceScene 위에 launch되어 결과를 보여주고, 버튼 클릭 후 다음 흐름으로 넘긴다.
  */
 export default class RaceResultScene extends Phaser.Scene {
   private onCloseCallback?: () => void
@@ -23,13 +22,43 @@ export default class RaceResultScene extends Phaser.Scene {
     time: number
     finished: boolean
     augments?: Augment[]
-    horseIndex?: number // 플레이어 말 강조 표시 판단용 원본 인덱스
+    horseIndex?: number // 플레이어 말 강조 표시용 원래 말 인덱스
   }> = []
 
-  /** 결과표 전체. 버튼 클릭 시 페이드 아웃 후 대기 연출 */
+  /** 결과표 전체 컨테이너. 버튼 클릭 후 페이드 아웃할 때 같이 숨긴다. */
   private resultContainer?: Phaser.GameObjects.Container
   private readyButton?: RoundedButtonController
   private finalResultButton?: RoundedButtonController
+
+  private shouldShowReadyButton(): boolean {
+    return this.currentSet < this.totalRounds
+  }
+
+  private addResultButtonContainer(button: RoundedButtonController, delay: number = 800) {
+    if (!this.resultContainer) return
+
+    button.container.setAlpha(0)
+    this.resultContainer.add(button.container)
+    this.tweens.add({
+      targets: button.container,
+      alpha: 1,
+      duration: 400,
+      delay,
+      ease: 'Power2',
+    })
+  }
+
+  private handleReadyButtonClick() {
+    this.showWaitingButton()
+  }
+
+  private handleFinalResultButtonClick() {
+    if (this.onFinalResultCallback) {
+      this.onFinalResultCallback()
+      return
+    }
+    this.closeScene()
+  }
 
   // 증강 등급 배지 색상
   private static readonly RARITY_COLORS: Record<AugmentRarity, string> = {
@@ -49,7 +78,7 @@ export default class RaceResultScene extends Phaser.Scene {
 
   constructor() {
     super({ key: 'RaceResultScene' })
-    // 게임 시작 시점의 언어를 사용 (게임 중 언어 변경은 적용하지 않음)
+    // 게임 시작 시점 언어를 사용한다. (게임 중 언어 변경은 여기서 따로 반영 안 함)
   }
 
   init(data?: {
@@ -119,7 +148,7 @@ export default class RaceResultScene extends Phaser.Scene {
 
     this.createRankingCards(width, height)
 
-    if (this.currentSet < this.totalRounds) {
+    if (this.shouldShowReadyButton()) {
       this.createReadyButton(width, height)
     } else {
       this.createFinalResultButton(width, height)
@@ -127,9 +156,7 @@ export default class RaceResultScene extends Phaser.Scene {
   }
 
   private closeScene() {
-    if (this.onCloseCallback) {
-      this.onCloseCallback()
-    }
+    this.onCloseCallback?.()
     this.scene.stop()
   }
 
@@ -166,6 +193,189 @@ export default class RaceResultScene extends Phaser.Scene {
     })
   }
 
+  private isPlayerHorseResult(result: (typeof this.rankings)[number]): boolean {
+    return result.horseIndex !== undefined && result.horseIndex === this.playerHorseIndex
+  }
+
+  private createRankCardBackground(
+    cardContainer: Phaser.GameObjects.Container,
+    cardWidth: number,
+    cardHeight: number,
+    result: (typeof this.rankings)[number],
+    isPlayerHorse: boolean,
+  ) {
+    const medalColor = RaceResultScene.MEDAL_COLORS[result.rank]
+    const bgColor = isPlayerHorse ? 0x2a2a3e : 0x1a1a2e
+    const borderColor = isPlayerHorse ? 0xffd700 : medalColor || 0x666666
+    const borderWidth = isPlayerHorse ? 4 : 2
+
+    const cardBg = this.add.graphics()
+    cardBg.fillStyle(bgColor, 0.95)
+    cardBg.fillRoundedRect(-cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight, 12)
+    cardBg.lineStyle(borderWidth, borderColor, 1)
+    cardBg.strokeRoundedRect(-cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight, 12)
+    cardContainer.add(cardBg)
+  }
+
+  private getRankBadgeText(rank: number): string {
+    if (rank === 1) return '🥇'
+    if (rank === 2) return '🥈'
+    if (rank === 3) return '🥉'
+    return `${rank}`
+  }
+
+  private getResultDisplayName(result: (typeof this.rankings)[number]): string {
+    return (
+      result.name ||
+      (result.horseIndex !== undefined ? `Horse_${result.horseIndex + 1}` : 'Unknown')
+    )
+  }
+
+  private addRankBadgeText(
+    cardContainer: Phaser.GameObjects.Container,
+    result: (typeof this.rankings)[number],
+    cardWidth: number,
+  ) {
+    const rankText = this.getRankBadgeText(result.rank)
+    const rank = this.add
+      .text(-cardWidth / 2 + 35, 0, rankText, {
+        fontFamily: 'NeoDunggeunmo',
+        fontSize: result.rank <= 3 ? '30px' : '24px',
+        color: '#ffffff',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+    cardContainer.add(rank)
+  }
+
+  private addNameText(
+    cardContainer: Phaser.GameObjects.Container,
+    result: (typeof this.rankings)[number],
+    cardWidth: number,
+    isPlayerHorse: boolean,
+  ) {
+    const nameSuffix = isPlayerHorse ? ' (나)' : ''
+    const displayName = this.getResultDisplayName(result)
+    const name = this.add
+      .text(-cardWidth / 2 + 120, 0, `${displayName}${nameSuffix}`, {
+        fontFamily: 'NeoDunggeunmo',
+        fontSize: '17px',
+        color: isPlayerHorse ? '#ffd700' : '#ffffff',
+        fontStyle: isPlayerHorse ? 'bold' : 'normal',
+      })
+      .setOrigin(0, 0.5)
+    cardContainer.add(name)
+  }
+
+  private addTimeText(
+    cardContainer: Phaser.GameObjects.Container,
+    result: (typeof this.rankings)[number],
+    cardWidth: number,
+  ) {
+    const timeText = result.finished
+      ? i18next.t('game.raceTime', { time: result.time.toFixed(3) })
+      : i18next.t('game.dnf')
+    const time = this.add
+      .text(-cardWidth / 2 + 350, 0, timeText, {
+        fontFamily: 'NeoDunggeunmo',
+        fontSize: '16px',
+        color: result.finished ? '#ffffff' : '#888888',
+        fontStyle: 'normal',
+      })
+      .setOrigin(0, 0.5)
+    cardContainer.add(time)
+  }
+
+  private buildAugmentSummaryItems(augments: Augment[]): Array<{ text: string; color: string }> {
+    const augmentTexts: Array<{ text: string; color: string }> = []
+
+    augments.forEach((aug) => {
+      let text = ''
+      const color = RaceResultScene.RARITY_COLORS[aug.rarity]
+
+      if (aug.specialAbility) {
+        const abilityName = SPECIAL_ABILITY_NAMES[aug.specialAbility]
+        const value = aug.specialAbilityValue ? ` +${aug.specialAbilityValue}` : ''
+        text = `${abilityName}${value}`
+      } else if (aug.statType && aug.statValue != null) {
+        const statName = AUGMENT_STAT_NAMES[aug.statType]
+        text = `${statName} +${aug.statValue}`
+      }
+
+      if (text) {
+        augmentTexts.push({ text, color })
+      }
+    })
+
+    return augmentTexts
+  }
+
+  private addNoAugmentText(cardContainer: Phaser.GameObjects.Container, cardWidth: number) {
+    const noAugmentText = this.add
+      .text(cardWidth / 2 - 20, 0, i18next.t('game.noAugment'), {
+        fontFamily: 'NeoDunggeunmo',
+        fontSize: '14px',
+        color: '#888888',
+      })
+      .setOrigin(1, 0.5)
+    cardContainer.add(noAugmentText)
+  }
+
+  private addAugmentSummaryTexts(
+    cardContainer: Phaser.GameObjects.Container,
+    augments: Augment[],
+    cardWidth: number,
+  ) {
+    if (augments.length === 0) {
+      this.addNoAugmentText(cardContainer, cardWidth)
+      return
+    }
+
+    const augmentTexts = this.buildAugmentSummaryItems(augments)
+    const fontSize = augments.length > 3 ? '12px' : '14px'
+    let cursorX = cardWidth / 2 - 20
+
+    for (let i = augmentTexts.length - 1; i >= 0; i--) {
+      const item = augmentTexts[i]
+      const itemText = this.add
+        .text(cursorX, 0, item.text, {
+          fontFamily: 'NeoDunggeunmo',
+          fontSize,
+          color: item.color,
+        })
+        .setOrigin(1, 0.5)
+      cardContainer.add(itemText)
+      cursorX -= itemText.width
+
+      if (i <= 0) continue
+
+      const separator = this.add
+        .text(cursorX, 0, ', ', {
+          fontFamily: 'NeoDunggeunmo',
+          fontSize,
+          color: '#ffffff',
+        })
+        .setOrigin(1, 0.5)
+      cardContainer.add(separator)
+      cursorX -= separator.width
+    }
+  }
+
+  private animateRankCardEntrance(
+    cardContainer: Phaser.GameObjects.Container,
+    y: number,
+    delay: number,
+  ) {
+    this.tweens.add({
+      targets: cardContainer,
+      alpha: 1,
+      y,
+      duration: 400,
+      delay,
+      ease: 'Back.easeOut',
+    })
+  }
+
   /**
    * 개별 순위 카드 생성
    */
@@ -185,136 +395,17 @@ export default class RaceResultScene extends Phaser.Scene {
     delay: number,
     parent: Phaser.GameObjects.Container,
   ) {
-    // horseIndex 기준으로 플레이어 본인 말인지 판단
-    const isPlayerHorse =
-      result.horseIndex !== undefined && result.horseIndex === this.playerHorseIndex
-    const medalColor = RaceResultScene.MEDAL_COLORS[result.rank]
+    const isPlayerHorse = this.isPlayerHorseResult(result)
 
     const cardContainer = this.add.container(x, y).setAlpha(0)
-
-    // 플레이어 본인 말은 금색 테두리로 강조
-    const bgColor = isPlayerHorse ? 0x2a2a3e : 0x1a1a2e
-    const borderColor = isPlayerHorse ? 0xffd700 : medalColor || 0x666666
-    const borderWidth = isPlayerHorse ? 4 : 2
-
-    const cardBg = this.add.graphics()
-    cardBg.fillStyle(bgColor, 0.95)
-    cardBg.fillRoundedRect(-cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight, 12)
-    cardBg.lineStyle(borderWidth, borderColor, 1)
-    cardBg.strokeRoundedRect(-cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight, 12)
-    cardContainer.add(cardBg)
-
-    // 순위 텍스트(1~3등은 메달 이모지)
-    let rankText = `${result.rank}`
-    if (result.rank === 1) rankText = '🥇'
-    else if (result.rank === 2) rankText = '🥈'
-    else if (result.rank === 3) rankText = '🥉'
-
-    const rank = this.add
-      .text(-cardWidth / 2 + 35, 0, rankText, {
-        fontFamily: 'NeoDunggeunmo',
-        fontSize: result.rank <= 3 ? '30px' : '24px',
-        color: '#ffffff',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5)
-    cardContainer.add(rank)
-
-    // 이름 (플레이어는 왕관 이모지)
-    const nameSuffix = isPlayerHorse ? ' (나)' : ''
-    // result.name을 직접 사용 (플레이어 이름)
-    // result.name이 없으면 horseIndex를 사용하여 기본 이름 생성
-    const displayName =
-      result.name ||
-      (result.horseIndex !== undefined ? `Horse_${result.horseIndex + 1}` : 'Unknown')
-    const name = this.add
-      .text(-cardWidth / 2 + 120, 0, `${displayName}${nameSuffix}`, {
-        fontFamily: 'NeoDunggeunmo',
-        fontSize: '17px',
-        color: isPlayerHorse ? '#ffd700' : '#ffffff',
-        fontStyle: isPlayerHorse ? 'bold' : 'normal',
-      })
-      .setOrigin(0, 0.5)
-    cardContainer.add(name)
-
-    // 기록 (i18next 사용)
-    const timeText = result.finished
-      ? i18next.t('game.raceTime', { time: result.time.toFixed(3) })
-      : i18next.t('game.dnf')
-    const time = this.add
-      .text(-cardWidth / 2 + 350, 0, timeText, {
-        fontFamily: 'NeoDunggeunmo',
-        fontSize: '16px',
-        color: result.finished ? '#ffffff' : '#888888',
-        fontStyle: 'normal',
-      })
-      .setOrigin(0, 0.5)
-    cardContainer.add(time)
-
-    // 증강 표시 (라운드별 누적 증강 모두 표시)
-    const augments = result.augments || []
-
-    if (augments.length === 0) {
-      const noAugmentText = this.add
-        .text(cardWidth / 2 - 20, 0, i18next.t('game.noAugment'), {
-          fontFamily: 'NeoDunggeunmo',
-          fontSize: '14px',
-          color: '#888888',
-        })
-        .setOrigin(1, 0.5)
-      cardContainer.add(noAugmentText)
-    } else {
-      const augmentTexts: Array<{ text: string; color: string }> = []
-
-      augments.forEach((aug) => {
-        let text = ''
-        const color = RaceResultScene.RARITY_COLORS[aug.rarity]
-
-        if (aug.specialAbility) {
-          const abilityName = SPECIAL_ABILITY_NAMES[aug.specialAbility]
-          const value = aug.specialAbilityValue ? ` +${aug.specialAbilityValue}` : ''
-          text = `${abilityName}${value}`
-        } else if (aug.statType && aug.statValue != null) {
-          const statName = AUGMENT_STAT_NAMES[aug.statType]
-          text = `${statName} +${aug.statValue}`
-        }
-
-        if (text) {
-          augmentTexts.push({ text, color })
-        }
-      })
-
-      const fullText = augmentTexts.map((item) => item.text).join(', ')
-      const highestRarityColor = augmentTexts[0]?.color || '#ffffff'
-      const fontSize = augments.length > 3 ? '12px' : '14px'
-
-      const augmentDisplay = this.add
-        .text(cardWidth / 2 - 20, 0, fullText, {
-          fontFamily: 'NeoDunggeunmo',
-          fontSize,
-          color: highestRarityColor,
-        })
-        .setOrigin(1, 0.5)
-
-      // 누적 증강이 많으면 줄바꿈 (순위/이름/기록 영역 제외 너비)
-      const wrapWidth = cardWidth * 0.45
-      if (fullText.length > 18) {
-        augmentDisplay.setWordWrapWidth(wrapWidth).setAlign('right')
-      }
-      cardContainer.add(augmentDisplay)
-    }
+    this.createRankCardBackground(cardContainer, cardWidth, cardHeight, result, isPlayerHorse)
+    this.addRankBadgeText(cardContainer, result, cardWidth)
+    this.addNameText(cardContainer, result, cardWidth, isPlayerHorse)
+    this.addTimeText(cardContainer, result, cardWidth)
+    this.addAugmentSummaryTexts(cardContainer, result.augments || [], cardWidth)
 
     parent.add(cardContainer)
-
-    // 등장 애니메이션
-    this.tweens.add({
-      targets: cardContainer,
-      alpha: 1,
-      y: y,
-      duration: 400,
-      delay: delay,
-      ease: 'Back.easeOut',
-    })
+    this.animateRankCardEntrance(cardContainer, y, delay)
   }
 
   /**
@@ -335,24 +426,12 @@ export default class RaceResultScene extends Phaser.Scene {
       hoverColor: 0x45a049,
       label: i18next.t('game.ready'),
       fontSize: '20px',
-      onClick: () => {
-        this.showWaitingButton()
-      },
+      onClick: () => this.handleReadyButtonClick(),
       scaleOnHover: true,
     })
 
     this.readyButton.text.setColor('#ffffff')
-    this.readyButton.container.setAlpha(0)
-    this.resultContainer!.add(this.readyButton.container)
-
-    // 버튼 등장 애니메이션
-    this.tweens.add({
-      targets: this.readyButton.container,
-      alpha: 1,
-      duration: 400,
-      delay: 800,
-      ease: 'Power2',
-    })
+    this.addResultButtonContainer(this.readyButton)
   }
 
   /**
@@ -361,37 +440,29 @@ export default class RaceResultScene extends Phaser.Scene {
    */
   private showWaitingButton() {
     const container = this.resultContainer
+    if (this.readyButton) {
+      this.readyButton.setEnabled(false)
+    }
+
     if (!container) {
-      showWaitingOverlay(this, {
-        messageKey: 'game.waitingAfterResult',
-        onComplete: () => this.startNextSet(),
-        durationMs: RaceResultScene.WAITING_DURATION_MS,
-      })
+      this.startNextSet()
       return
     }
-    showWaitingOverlay(this, {
-      messageKey: 'game.waitingAfterResult',
-      onComplete: () => this.startNextSet(),
-      durationMs: RaceResultScene.WAITING_DURATION_MS,
-    })
+
     this.tweens.add({
       targets: container,
       alpha: 0,
       duration: 280,
       ease: 'Power2.In',
+      onComplete: () => this.startNextSet(),
     })
   }
-
-  /** 결과 화면 이후 다음 세트 전환 대기 시간(ms). */
-  private static readonly WAITING_DURATION_MS = 3000
 
   /**
    * 다음 세트 시작
    */
   private startNextSet() {
-    if (this.onNextSetCallback) {
-      this.onNextSetCallback()
-    }
+    this.onNextSetCallback?.()
     this.scene.stop()
   }
 
@@ -414,25 +485,10 @@ export default class RaceResultScene extends Phaser.Scene {
       label: i18next.t('game.viewFinalResult'),
       textColor: '#000000',
       fontSize: '20px',
-      onClick: () => {
-        if (this.onFinalResultCallback) {
-          this.onFinalResultCallback()
-          return
-        }
-        this.closeScene()
-      },
+      onClick: () => this.handleFinalResultButtonClick(),
       scaleOnHover: true,
     })
-    this.finalResultButton.container.setDepth(2001).setAlpha(0)
-    this.resultContainer!.add(this.finalResultButton.container)
-
-    // 버튼 등장 애니메이션
-    this.tweens.add({
-      targets: this.finalResultButton.container,
-      alpha: 1,
-      duration: 400,
-      delay: 800,
-      ease: 'Power2',
-    })
+    this.finalResultButton.container.setDepth(2001)
+    this.addResultButtonContainer(this.finalResultButton)
   }
 }

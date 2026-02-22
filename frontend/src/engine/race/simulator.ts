@@ -1,6 +1,6 @@
 // =========================
 // 레이스 시뮬레이션 엔진
-// - 레이스 실행
+// - 말 업데이트 루프
 // - 순위 추적
 // - 결과 생성
 // =========================
@@ -15,12 +15,14 @@ import { generateRandomStats } from './stat-system'
 // =========================
 
 function snapshotOrder(horses: Horse[]): SnapshotOrder[] {
+  // 현재 위치 기준으로 임시 순위를 만든다. (추월 감지용)
   return horses
     .map((h) => ({ name: h.name, position: h.position }))
     .sort((a, b) => b.position - a.position)
 }
 
 function buildRankMap(snapshot: SnapshotOrder[] | null): Record<string, number | null> {
+  // 최종 결과를 이름으로 빠르게 찾으려고 rank map으로 한번 바꿔둔다.
   const map: Record<string, number | null> = {}
   if (!snapshot) return map
   snapshot.forEach((h, idx) => {
@@ -44,14 +46,14 @@ export function runRace(options: RaceOptions = {}): RaceResult[] {
   const horses: Horse[] = []
 
   if (customHorses && customHorses.length > 0) {
-    // 명시적으로 말 리스트를 전달한 경우
+    // 테스트처럼 말 리스트를 직접 넘긴 경우
     for (const h of customHorses) {
       const horse = new Horse(h.name, h.stats)
       horse.prepareForRace()
       horses.push(horse)
     }
   } else {
-    // 자동 생성 모드
+    // 별도 입력이 없으면 여기서 랜덤 말을 만든다.
     for (let i = 0; i < numHorses; i++) {
       const baseStats = generateRandomStats()
       const horse = new Horse(`Horse_${i + 1}`, baseStats)
@@ -60,13 +62,13 @@ export function runRace(options: RaceOptions = {}): RaceResult[] {
     }
   }
 
-  // 시뮬레이션 시간(초). DT씩 증가한다.
+  // 시뮬레이션 시간(초). 루프를 돌 때마다 dt만큼 증가한다.
   let time = 0
 
   while (time < MAX_SIM_TIME_SEC) {
     let allFinished = true
 
-    // 현재 순위 계산 (추월 감지 및 위기 탈출 발동용)
+    // 먼저 순위를 계산해서 말 step 안에서 추월/위기탈출 조건에 쓴다.
     const currentRanking = snapshotOrder(horses)
     for (let i = 0; i < currentRanking.length; i++) {
       const horseName = currentRanking[i].name
@@ -89,7 +91,9 @@ export function runRace(options: RaceOptions = {}): RaceResult[] {
     time += SIM_STEP_SEC
   }
 
-  // 결과 정렬: 완주 말은 finishTime 오름차순, 미완주는 진행거리 내림차순
+  // 결과 정렬 규칙:
+  // - 완주한 말은 finishTime 빠른 순
+  // - 미완주 말은 더 멀리 간 순
   const results = horses
     .map((h) => ({
       horse: h,

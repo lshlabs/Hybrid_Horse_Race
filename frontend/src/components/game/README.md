@@ -1,7 +1,7 @@
 # Game (Phaser)
 
 이 폴더는 React에서 Phaser 게임을 구동하기 위한 코드만 모아둔 영역입니다.
-초보자도 흐름을 이해하기 쉽도록 역할별로 나눴습니다.
+흐름을 이해하기 쉽도록 역할별로 나눴습니다.
 
 ## 구조
 
@@ -29,4 +29,3 @@ React → `PhaserGame.tsx` → `RaceScene`(필요 시 다른 씬으로 확장)
 
 - Scene은 흐름 제어만, 화면 요소는 Manager로 분리
 - 에셋 로딩은 Scene 또는 공용 LoaderScene으로 통합
-

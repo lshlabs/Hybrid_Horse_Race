@@ -22,10 +22,10 @@ import { createAugmentCardContent } from './modules/augmentCardRenderer'
 
 /**
  * 증강 선택 Scene
- * 슬롯머신 연출 후 3개의 증강 카드 중 하나를 선택하는 UI를 제공
+ * 룰렛(등급 연출) 이후에 3장의 증강 카드 중 하나를 고르는 화면이다.
  */
 export default class AugmentSelectionScene extends Phaser.Scene {
-  // 스타일 상수
+  // 스타일 상수 (등급 색/텍스처/레이아웃)
   private static readonly RARITY_COLORS: Record<AugmentRarity, number> = {
     common: 0x9e9e9e, // 회색
     rare: 0x2196f3, // 파란색
@@ -80,13 +80,14 @@ export default class AugmentSelectionScene extends Phaser.Scene {
   /** 증강 UI 위쪽 오프셋(px). 값을 줄이면 카드가 화면 중앙에 가깝게 내려옴 */
   private static readonly AUGMENT_UI_UP_OFFSET = 40
 
-  // 상태 필드
+  // 상태 필드 (리롤/선택/연출 상태)
   private rarity: AugmentRarity = 'common'
   private maxRerolls: number = 3 // 전체 리롤 한도
   private remainingRerolls: number = 3 // 세트 간 공유되는 남은 리롤 횟수
   private rerollCount: number = 0 // 현재 세트에서 사용한 리롤 횟수
   private onSelectCallback?: (augment: Augment, usedRerolls: number) => void
   private onCancelCallback?: () => void
+  private onRerollCallback?: (usedRerollsAfterClick: number) => Promise<Augment[] | null>
   /** 증강 카드 클릭 시 미리보기용 (HUD 능력치 강조). 선택 버튼이 아닌 카드 클릭이 트리거. */
   private onPreviewCallback?: (augment: Augment | null) => void
   /** 증강 카드 등장 시 호출 (하단 HUD 표시용) */
@@ -96,13 +97,14 @@ export default class AugmentSelectionScene extends Phaser.Scene {
   private selectedAugment: Augment | null = null
   private selectedCardIndex: number = -1
 
-  // UI 요소
+  // UI 요소 참조
   private uiContainer?: Phaser.GameObjects.Container
   private cardContainers: Phaser.GameObjects.Container[] = []
   private cardVisuals: Phaser.GameObjects.Container[] = []
   private rerollButton?: RoundedButtonController
   private confirmButton?: RoundedButtonController
   private rouletteAnimator?: RouletteAnimator
+  private isRerolling = false
   /** 슬롯머신 연출 중 우상단 스킵 버튼 (등급확정 연출로 즉시 이동) */
   private skipRouletteButton?: RoundedButtonController
   /** 브라우저 자동재생 정책 대응: 첫 클릭 후 슬롯머신 시작용 오버레이 */
@@ -112,7 +114,7 @@ export default class AugmentSelectionScene extends Phaser.Scene {
 
   constructor() {
     super('AugmentSelectionScene')
-    // 게임 시작 시점의 언어를 사용 (게임 중 언어 변경은 적용하지 않음)
+    // 게임 시작 시점 언어를 사용한다. (중간 언어 변경은 이 씬에서 고정)
   }
   preload() {
     this.load.image('stat_acceleration', accelerationUrl)
@@ -129,16 +131,17 @@ export default class AugmentSelectionScene extends Phaser.Scene {
     this.load.image('card_epic', cardEpicUrl)
     this.load.image('card_legendary', cardLegendaryUrl)
     this.load.image('card_hidden', cardHiddenUrl)
-    this.load.audio('roulette_confirm', '/sounds/roulette_confirm.wav')
   }
 
   init(data?: {
     rarity?: AugmentRarity
+    augmentChoices?: Augment[]
     maxRerolls?: number
     remainingRerolls?: number
     /** 첫 라운드 룰렛 이전에만 true. true일 때만 "클릭하여 게임 시작" 오버레이 표시 */
     showTapToStart?: boolean
     onSelect?: (augment: Augment, usedRerolls: number) => void
+    onReroll?: (usedRerollsAfterClick: number) => Promise<Augment[] | null>
     onCancel?: () => void
     onPreview?: (augment: Augment | null) => void
     /** 증강 카드 등장 시 호출 (하단 HUD 표시용) */
@@ -148,6 +151,7 @@ export default class AugmentSelectionScene extends Phaser.Scene {
     this.maxRerolls = data?.maxRerolls ?? 3 // 전체 리롤 한도
     this.remainingRerolls = data?.remainingRerolls ?? data?.maxRerolls ?? 3 // 남은 리롤 횟수
     this.onSelectCallback = data?.onSelect
+    this.onRerollCallback = data?.onReroll
     this.onCancelCallback = data?.onCancel
     this.onPreviewCallback = data?.onPreview
     this.onCardsShownCallback = data?.onCardsShown
@@ -159,7 +163,11 @@ export default class AugmentSelectionScene extends Phaser.Scene {
     this.cardContainers = []
     this.cardVisuals = []
 
-    this.augmentChoices = generateAugmentChoices(this.rarity)
+    if (data?.augmentChoices && data.augmentChoices.length > 0) {
+      this.augmentChoices = data.augmentChoices
+    } else {
+      this.augmentChoices = generateAugmentChoices(this.rarity)
+    }
   }
 
   create() {
@@ -168,10 +176,19 @@ export default class AugmentSelectionScene extends Phaser.Scene {
 
     // 증강 아이콘만 LINEAR(스무딩) 유지 → 픽셀 아트가 아닌 아이콘이 선명하게
     this.applySmoothFilterToAugmentIcons()
+    this.initializeUiContainer()
+    this.fadeInUiContainer()
+    this.registerKeyboardShortcuts()
+    this.startSelectionEntryFlow(width, height)
+  }
 
+  private initializeUiContainer() {
     this.uiContainer = this.add.container(0, AugmentSelectionScene.UI_OFFSET_Y)
+  }
 
-    // 페이드 인 애니메이션
+  private fadeInUiContainer() {
+    if (!this.uiContainer) return
+
     this.uiContainer.setAlpha(0)
     this.tweens.add({
       targets: this.uiContainer,
@@ -179,14 +196,19 @@ export default class AugmentSelectionScene extends Phaser.Scene {
       duration: 300,
       ease: 'Power2',
     })
+  }
 
+  private registerKeyboardShortcuts() {
     this.input.keyboard?.on('keydown-ESC', () => this.cancelSelection())
+  }
 
+  private startSelectionEntryFlow(width: number, height: number) {
     if (this.showTapToStart) {
       this.showTapToStartOverlay(width, height)
-    } else {
-      this.startSlotMachineAnimation(width, height)
+      return
     }
+
+    this.startSlotMachineAnimation(width, height)
   }
 
   /**
@@ -251,6 +273,45 @@ export default class AugmentSelectionScene extends Phaser.Scene {
     return { cardY, startX }
   }
 
+  private getCardPosition(startX: number, cardY: number, index: number) {
+    return {
+      x: startX + index * (AugmentSelectionScene.CARD_WIDTH + AugmentSelectionScene.CARD_GAP),
+      y: cardY,
+    }
+  }
+
+  private animateCardEntry(
+    container: Phaser.GameObjects.Container,
+    index: number,
+    options: { fadeIn?: boolean; initialAlpha: number; initialScale: number },
+  ) {
+    const { fadeIn = false, initialAlpha, initialScale } = options
+    if (!fadeIn) return
+
+    container.setAlpha(initialAlpha).setScale(initialScale)
+    this.tweens.add({
+      targets: container,
+      alpha: 1,
+      scaleX: 1,
+      scaleY: 1,
+      duration: 250,
+      delay: index * 50,
+      ease: 'Back.easeOut',
+    })
+  }
+
+  private maybeCreateHiddenAugmentAnimation(
+    augment: Augment,
+    cardX: number,
+    cardY: number,
+    index: number,
+    fadeIn: boolean,
+  ) {
+    if (augment.rarity !== 'hidden') return
+    const delay = fadeIn ? index * 50 : index * 200
+    this.createHiddenAugmentAnimation(cardX, cardY, delay)
+  }
+
   /**
    * 3개의 증강 카드 생성 (초기 생성 및 리롤 시 공통 사용)
    */
@@ -268,35 +329,20 @@ export default class AugmentSelectionScene extends Phaser.Scene {
 
     for (let i = 0; i < 3; i++) {
       const augment = this.augmentChoices[i]
-      const cardX = startX + i * (AugmentSelectionScene.CARD_WIDTH + AugmentSelectionScene.CARD_GAP)
+      const { x: cardX, y: cardYPosition } = this.getCardPosition(startX, cardY, i)
 
-      const { container, visualsContainer } = this.createAugmentCard(cardX, cardY, augment, i)
+      const { container, visualsContainer } = this.createAugmentCard(
+        cardX,
+        cardYPosition,
+        augment,
+        i,
+      )
       this.uiContainer.add(container)
       this.cardContainers.push(container)
       this.cardVisuals.push(visualsContainer)
 
-      if (fadeIn) {
-        container.setAlpha(initialAlpha).setScale(initialScale)
-        const delay = i * 50
-
-        this.tweens.add({
-          targets: container,
-          alpha: 1,
-          scaleX: 1,
-          scaleY: 1,
-          duration: 250,
-          delay,
-          ease: 'Back.easeOut',
-        })
-
-        // 히든 등급은 추가 효과 적용
-        if (augment.rarity === 'hidden') {
-          this.createHiddenAugmentAnimation(cardX, cardY, delay)
-        }
-      } else if (augment.rarity === 'hidden') {
-        // fadeIn이 false일 때도 히든 등급 추가 효과 적용
-        this.createHiddenAugmentAnimation(cardX, cardY, i * 200)
-      }
+      this.animateCardEntry(container, i, { fadeIn, initialAlpha, initialScale })
+      this.maybeCreateHiddenAugmentAnimation(augment, cardX, cardYPosition, i, fadeIn)
     }
   }
 
@@ -493,18 +539,53 @@ export default class AugmentSelectionScene extends Phaser.Scene {
     this.confirmButton.setEnabled(enabled)
   }
 
+  private canReroll(): boolean {
+    return this.rerollCount < this.remainingRerolls && !this.isRerolling
+  }
+
+  private rollbackRerollCount() {
+    this.rerollCount = Math.max(0, this.rerollCount - 1)
+    this.rerollButton?.setLabel(this.getRerollButtonLabel())
+  }
+
+  private syncRerollUiState() {
+    this.updateRerollButton(this.getRemainingRerollsForCurrentSelection() > 0)
+    this.updateConfirmButton(this.selectedAugment !== null)
+  }
+
+  private applyRerollPendingState() {
+    this.isRerolling = true
+    this.updateRerollButton(false)
+    this.updateConfirmButton(false)
+  }
+
+  private resetSelectionForReroll() {
+    this.selectedAugment = null
+    this.selectedCardIndex = -1
+    this.onPreviewCallback?.(null)
+    this.updateConfirmButton(false)
+  }
+
+  private applyRerollChoices(nextChoices: Augment[]) {
+    this.fadeOutCards(() => {
+      this.augmentChoices = nextChoices
+      this.createCards(this.scale.width, this.scale.height, {
+        fadeIn: true,
+        initialAlpha: 0,
+        initialScale: 0.8,
+      })
+    })
+  }
+
   /**
    * 증강 리롤 (새로운 선택지 생성)
    */
   private reroll() {
     // 남은 리롤 횟수 확인 (세트 간 공유)
-    if (this.rerollCount >= this.remainingRerolls) return
+    if (!this.canReroll()) return
 
     this.rerollCount++
-    this.selectedAugment = null
-    this.selectedCardIndex = -1
-    this.onPreviewCallback?.(null)
-    this.updateConfirmButton(false)
+    this.resetSelectionForReroll()
 
     // 리롤 버튼 텍스트 업데이트 (i18next 사용)
     this.rerollButton?.setLabel(this.getRerollButtonLabel())
@@ -514,15 +595,30 @@ export default class AugmentSelectionScene extends Phaser.Scene {
       this.updateRerollButton(false)
     }
 
-    // 카드 페이드 아웃 후 새 카드 생성
-    this.fadeOutCards(() => {
-      this.augmentChoices = generateAugmentChoices(this.rarity)
-      this.createCards(this.scale.width, this.scale.height, {
-        fadeIn: true,
-        initialAlpha: 0,
-        initialScale: 0.8,
-      })
-    })
+    this.applyRerollPendingState()
+
+    if (this.onRerollCallback) {
+      void this.onRerollCallback(this.rerollCount)
+        .then((choices) => {
+          if (!choices || choices.length === 0) {
+            this.rollbackRerollCount()
+            return
+          }
+          this.applyRerollChoices(choices)
+        })
+        .catch(() => {
+          this.rollbackRerollCount()
+        })
+        .finally(() => {
+          this.isRerolling = false
+          this.syncRerollUiState()
+        })
+      return
+    }
+
+    this.applyRerollChoices(generateAugmentChoices(this.rarity))
+    this.isRerolling = false
+    this.updateRerollButton(this.getRemainingRerollsForCurrentSelection() > 0)
   }
 
   /**
@@ -714,10 +810,7 @@ export default class AugmentSelectionScene extends Phaser.Scene {
 
   /** 슬롯머신(룰렛) 연출 시작 */
   private startSlotMachineAnimation(width: number, height: number) {
-    // 사운드는 즉시 재생, 연출은 오프셋만큼 지연해 싱크 맞춤
-    if (this.cache.audio.exists('roulette_confirm')) {
-      this.sound.play('roulette_confirm', { volume: 0.8 })
-    }
+    // 사운드 제거 상태: 연출만 실행한다.
     this.rouletteAnimator?.destroy()
     this.rouletteAnimator = new RouletteAnimator({
       scene: this,

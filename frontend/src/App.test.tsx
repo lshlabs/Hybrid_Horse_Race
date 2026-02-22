@@ -5,7 +5,7 @@ import App from './App'
 import i18n from './lib/i18n'
 
 describe('App', () => {
-  it('renders the dashboard hero title', () => {
+  it('renders the dashboard hero title', async () => {
     void i18n.changeLanguage('ko')
 
     render(
@@ -15,7 +15,7 @@ describe('App', () => {
     )
 
     expect(
-      screen.getByRole('heading', { name: i18n.t('appTitle', { lng: 'ko' }) }),
+      await screen.findByRole('heading', { name: i18n.t('appTitle', { lng: 'ko' }) }),
     ).toBeInTheDocument()
   })
 })

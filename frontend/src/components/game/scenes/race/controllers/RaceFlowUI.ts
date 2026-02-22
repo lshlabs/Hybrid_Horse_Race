@@ -5,15 +5,11 @@ import type HorseManager from '../../../managers/HorseManager'
 import { showWaitingOverlay } from '../../../effects/showWaitingOverlay'
 
 /**
- * RaceScene UI 흐름 전담 클래스.
- * - 대기 연출 전/후 HUD 표시 상태 전환
- * - 공통 대기 오버레이 호출 래핑
- *
- * 목적:
- * - RaceScene에서 렌더/연출 제어 코드를 분리해 읽기 쉽게 유지
+ * RaceScene UI 흐름 보조 클래스
+ * 대기 오버레이 전/후에 HUD를 숨기거나 다시 보여주는 코드를 한 곳에 모아둔다.
  */
 export default class RaceFlowUI {
-  /** 대기 연출 시작 전, 시야를 분산시키는 HUD 요소를 숨긴다. */
+  /** 대기 연출 시작 전에 HUD를 잠깐 숨겨서 화면이 덜 복잡하게 보이게 한다. */
   hideGUIForWaitingOverlay(config: {
     hud: GUIManager
     progressBarManager: ProgressBarManager
@@ -24,18 +20,18 @@ export default class RaceFlowUI {
     config.horseManager.hidePlayerIndicator()
   }
 
-  /** 대기 연출 종료 후, 레이스 HUD를 원래 상태로 복구한다. */
+  /** 대기 연출이 끝나면 숨겼던 HUD를 다시 원래대로 보여준다. */
   showGUIAfterWaitingOverlay(config: { hud: GUIManager; horseManager: HorseManager }) {
     config.hud.setAugmentSelectionHUD('full')
     config.horseManager.showPlayerIndicator()
   }
 
-  /** 공통 대기 오버레이를 표시한다. */
+  /** 공통 대기 오버레이 표시 (메시지만 바꿔서 재사용) */
   showWaiting(
     scene: Phaser.Scene,
-    config: { messageKey: string; durationMs: number; onComplete: () => void },
+    config: { messageKey: string; durationMs?: number | null; onComplete: () => void },
   ) {
-    showWaitingOverlay(scene, {
+    return showWaitingOverlay(scene, {
       messageKey: config.messageKey,
       durationMs: config.durationMs,
       onComplete: config.onComplete,

@@ -8,6 +8,7 @@
 import type { Augment, AugmentRarity, AugmentStatType } from './types'
 import { AUGMENT_STAT_NAMES, SPECIAL_ABILITY_NAMES } from './types'
 import type { Stats } from './types'
+import { applyStatAugments as applyStatAugmentsCore } from '../../../../shared/race-core/horse-logic-core'
 
 /**
  * 증강 등급별 능력치 상승량 범위
@@ -17,7 +18,7 @@ const AUGMENT_STAT_VALUES: Record<AugmentRarity, { min: number; max: number }> =
   rare: { min: 3, max: 4 },
   epic: { min: 5, max: 6 },
   legendary: { min: 7, max: 10 },
-  hidden: { min: 6, max: 10 }, // 히든 등급은 레전더리와 동일
+  hidden: { min: 6, max: 10 }, // 히든 등급 수치 범위는 레전더리와 동일하게 사용
 }
 
 /**
@@ -28,13 +29,15 @@ const AUGMENT_RARITY_WEIGHTS: Record<AugmentRarity, number> = {
   rare: 25,
   epic: 25,
   legendary: 15,
-  hidden: 0, // 히든 등급은 직접 생성되므로 가중치 없음
+  hidden: 0, // 히든 등급은 일반 랜덤 뽑기에서 안 나오고 별도 조건으로만 생성
 }
 
 /**
  * 모든 능력치 타입
  */
 const ALL_STAT_TYPES: AugmentStatType[] = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Luck']
+// 히든 특수 능력 값 범위를 한 곳에 모아두면 나중에 밸런스 조정할 때 보기 쉽다.
+const HIDDEN_SPECIAL_ABILITY_VALUE_RANGE = { min: 6, max: 10 } as const
 
 /**
  * 랜덤 정수 생성 (min ~ max)
@@ -58,6 +61,38 @@ function weightedRandom<T>(items: T[], weights: number[]): T {
   }
 
   return items[items.length - 1]
+}
+
+function buildAugmentId(prefix: string, rarity: AugmentRarity, value: number): string {
+  return `${prefix}-${rarity}-${value}-${Date.now()}-${Math.random()}`
+}
+
+function createHiddenSpecialAugment(
+  specialAbility: Augment['specialAbility'],
+  abilityName: string,
+): Augment {
+  // 히든 특수 능력 3종이 같은 패턴이라 공통 생성 함수로 묶어둔다.
+  const rarity: AugmentRarity = 'hidden'
+  const abilityValue = randomInt(
+    HIDDEN_SPECIAL_ABILITY_VALUE_RANGE.min,
+    HIDDEN_SPECIAL_ABILITY_VALUE_RANGE.max,
+  )
+
+  return {
+    id: buildAugmentId(String(specialAbility), rarity, abilityValue),
+    name: abilityName,
+    rarity,
+    specialAbility,
+    specialAbilityValue: abilityValue,
+  }
+}
+
+function shuffleInPlace<T>(items: T[]): void {
+  // 선택지 순서를 섞어서 특수 카드가 항상 같은 위치에 오지 않게 한다.
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[items[i], items[j]] = [items[j], items[i]]
+  }
 }
 
 // =========================
@@ -85,7 +120,7 @@ export function createAugment(
   const value = statValue ?? randomInt(valueRange.min, valueRange.max)
 
   const statName = AUGMENT_STAT_NAMES[statType]
-  const name = `${statName} +${value}` // 등급 접두사 제거 (카드 색상으로 구분)
+  const name = `${statName} +${value}` // 등급은 카드 색상으로 보여줘서 이름은 단순하게 둔다.
 
   return {
     id: `${rarity}-${statType}-${value}-${Date.now()}-${Math.random()}`,
@@ -104,64 +139,24 @@ export function createAugment(
  * 라스트 스퍼트 특수 능력 증강 생성 (히든 등급)
  */
 export function createLastSpurtAugment(): Augment {
-  const rarity: AugmentRarity = 'hidden'
   const abilityName = SPECIAL_ABILITY_NAMES.lastSpurt
-  const name = abilityName // 특수 능력은 등급 접두사 제거
-
-  // 능력치가 높을수록 더 빨리 발동 (6~10 범위, 레전더리와 동일)
-  // 수치 10 → 400m(0.8 진행률)에서 발동
-  // 수치 6 → 440m(0.88 진행률)에서 발동
-  const abilityValue = randomInt(6, 10)
-
-  return {
-    id: `lastSpurt-${rarity}-${abilityValue}-${Date.now()}-${Math.random()}`,
-    name,
-    rarity,
-    specialAbility: 'lastSpurt',
-    specialAbilityValue: abilityValue,
-  }
+  return createHiddenSpecialAugment('lastSpurt', abilityName)
 }
 
 /**
  * 추월 보너스 특수 능력 증강 생성 (히든 등급)
  */
 export function createOvertakeAugment(): Augment {
-  const rarity: AugmentRarity = 'hidden'
   const abilityName = SPECIAL_ABILITY_NAMES.overtake
-  const name = abilityName
-
-  // 수치: 추월 시 속도 증가량 (6~10 범위)
-  // 수치가 높을수록 더 큰 속도 증가
-  const abilityValue = randomInt(6, 10)
-
-  return {
-    id: `overtake-${rarity}-${abilityValue}-${Date.now()}-${Math.random()}`,
-    name,
-    rarity,
-    specialAbility: 'overtake',
-    specialAbilityValue: abilityValue,
-  }
+  return createHiddenSpecialAugment('overtake', abilityName)
 }
 
 /**
  * 위기 탈출 특수 능력 증강 생성 (히든 등급)
  */
 export function createEscapeCrisisAugment(): Augment {
-  const rarity: AugmentRarity = 'hidden'
   const abilityName = SPECIAL_ABILITY_NAMES.escapeCrisis
-  const name = abilityName // 특수 능력은 등급 접두사 제거
-
-  // 수치: 능력치 증가량 (6~10 범위)
-  // 수치가 높을수록 더 큰 능력치 증가
-  const abilityValue = randomInt(6, 10)
-
-  return {
-    id: `escapeCrisis-${rarity}-${abilityValue}-${Date.now()}-${Math.random()}`,
-    name,
-    rarity,
-    specialAbility: 'escapeCrisis',
-    specialAbilityValue: abilityValue,
-  }
+  return createHiddenSpecialAugment('escapeCrisis', abilityName)
 }
 
 // =========================
@@ -176,45 +171,40 @@ export function createEscapeCrisisAugment(): Augment {
 export function generateAugmentChoices(rarity: AugmentRarity): Augment[] {
   const choices: Augment[] = []
 
-  // 전설 등급인 경우 특수 능력 포함 가능
+  // 전설 등급에서만 특수 능력 카드가 섞일 수 있다.
   if (rarity === 'legendary') {
-    // 15% 확률로 히든 등급 특수 능력 포함
+    // 전설 카드 중 일부만 히든 특수 능력으로 바꿔준다.
     const roll = Math.random()
     if (roll < 0.05) {
-      // 5% 확률: 라스트 스퍼트
+      // 각 구간이 5%씩이라 특수 능력 3종 확률이 같다.
       choices.push(createLastSpurtAugment())
     } else if (roll < 0.1) {
-      // 5% 확률: 추월 보너스
       choices.push(createOvertakeAugment())
     } else if (roll < 0.15) {
-      // 5% 확률: 위기 탈출
       choices.push(createEscapeCrisisAugment())
     }
   }
 
   const availableStats = [...ALL_STAT_TYPES]
 
-  // 나머지 슬롯을 일반 증강으로 채움
+  // 남은 칸은 일반 능력치 증강으로 채운다.
   while (choices.length < 3) {
-    // 사용 가능한 능력치 타입이 부족하면 다시 사용 가능하도록
+    // 후보가 다 떨어지면 다시 채워서 중복도 허용한다.
     if (availableStats.length === 0) {
       availableStats.push(...ALL_STAT_TYPES)
     }
 
-    // 랜덤으로 능력치 타입 선택
+    // 능력치 타입 하나 선택
     const randomIndex = randomInt(0, availableStats.length - 1)
     const statType = availableStats.splice(randomIndex, 1)[0]
 
-    // 증강 생성
+    // 선택한 타입으로 카드 생성
     const augment = createAugment(rarity, statType)
     choices.push(augment)
   }
 
-  // 순서 섞기
-  for (let i = choices.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[choices[i], choices[j]] = [choices[j], choices[i]]
-  }
+  // 특수 카드가 항상 앞에 보이지 않도록 마지막에 섞는다.
+  shuffleInPlace(choices)
 
   return choices
 }
@@ -239,15 +229,5 @@ export function generateRandomAugmentChoices(): Augment[] {
  * @returns 증강이 적용된 능력치
  */
 export function applyAugmentsToStats(baseStats: Stats, augments: Augment[]): Stats {
-  const result: Stats = { ...baseStats }
-
-  for (const augment of augments) {
-    // 일반 증강인 경우에만 능력치 적용
-    if (augment.statType && augment.statValue != null) {
-      result[augment.statType] += augment.statValue
-    }
-    // 특수 능력은 능력치에 직접 영향을 주지 않음
-  }
-
-  return result
+  return applyStatAugmentsCore(baseStats, augments)
 }

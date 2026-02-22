@@ -7,8 +7,8 @@ export interface CountdownManagerConfig {
 }
 
 /**
- * 레이스 시작 전 카운트다운(3,2,1,GO)을 그려주는 경량 매니저.
- * 생성/애니메이션/정리까지 내부에서 처리하고, 완료 시 콜백만 호출한다.
+ * 레이스 시작 전에 3,2,1,GO 카운트다운을 보여주는 간단한 매니저.
+ * 텍스트 생성/애니메이션/삭제까지 여기서 처리하고 끝나면 콜백만 호출한다.
  */
 export default class CountdownManager {
   private scene: Phaser.Scene
@@ -21,9 +21,7 @@ export default class CountdownManager {
     this.centerY = config.centerY
   }
 
-  /**
-   * 카운트다운을 시작하고 끝나면 `onComplete`를 한 번 호출한다.
-   */
+  /** 카운트다운을 시작하고, 완료 콜백은 한 번만 호출한다. */
   start(onComplete: () => void): void {
     const countdownText = this.scene.add
       .text(this.centerX, this.centerY, '3', {
@@ -40,12 +38,16 @@ export default class CountdownManager {
 
     const counts = [3, 2, 1, 'GO!']
     let currentIndex = 0
+    let didComplete = false
 
-    // 숫자 1개씩 "등장 -> 잠깐 유지 -> 퇴장" 시퀀스를 재귀적으로 반복한다.
+    // 숫자 하나씩 "등장 -> 잠깐 유지 -> 퇴장" 순서로 반복한다.
     const showNext = () => {
       if (currentIndex >= counts.length) {
         countdownText.destroy()
-        onComplete()
+        if (!didComplete) {
+          didComplete = true
+          onComplete()
+        }
         return
       }
 
@@ -59,6 +61,10 @@ export default class CountdownManager {
         duration: 300,
         ease: 'Back.easeOut',
         onComplete: () => {
+          if (counts[currentIndex] === 'GO!' && !didComplete) {
+            didComplete = true
+            onComplete()
+          }
           this.scene.time.delayedCall(400, () => {
             this.scene.tweens.add({
               targets: countdownText,

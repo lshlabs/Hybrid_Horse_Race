@@ -15,6 +15,14 @@ let appInstance: FirebaseApp | null = null
 let firestoreInstance: Firestore | null = null
 let isFirestoreEmulatorConnected = false
 
+function resolveEmulatorHost(envHost?: string): string {
+  if (envHost && envHost.trim().length > 0) return envHost.trim()
+  if (typeof window !== 'undefined' && window.location.hostname) {
+    return window.location.hostname
+  }
+  return '127.0.0.1'
+}
+
 function getFirebaseConfig(): FirebaseConfig {
   // 개발 환경에서 Emulator 사용 시 기본값 사용
   const useEmulator = import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true'
@@ -75,10 +83,15 @@ export function getFirebaseDb(): Firestore {
 
     if (useEmulator && !isFirestoreEmulatorConnected) {
       try {
+        const emulatorHost = resolveEmulatorHost(
+          import.meta.env.VITE_FIREBASE_FIRESTORE_EMULATOR_HOST ||
+            import.meta.env.VITE_FIREBASE_FUNCTIONS_EMULATOR_HOST,
+        )
+        const emulatorPort = Number(import.meta.env.VITE_FIREBASE_FIRESTORE_EMULATOR_PORT || 8081)
         // Emulator 연결 (중복 연결 방지)
-        connectFirestoreEmulator(firestoreInstance, '127.0.0.1', 8081)
+        connectFirestoreEmulator(firestoreInstance, emulatorHost, emulatorPort)
         isFirestoreEmulatorConnected = true
-        console.log('✅ Connected to Firestore Emulator at 127.0.0.1:8081')
+        console.log(`✅ Connected to Firestore Emulator at ${emulatorHost}:${emulatorPort}`)
       } catch (error: unknown) {
         // 이미 연결된 경우 에러 무시
         const err = error as { message?: string; code?: string }

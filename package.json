@@ -10,10 +10,18 @@
     "format": "npm run format --prefix frontend",
     "functions:build": "npm run build --prefix functions",
     "emulators": "npm run functions:build && firebase emulators:start",
+    "doctor:runtime": "node scripts/runtime-doctor.mjs",
+    "predeploy:verify": "node scripts/predeploy-verify.mjs",
+    "predeploy:verify:staging": "node scripts/predeploy-verify.mjs --project staging --mode staging",
+    "predeploy:verify:prod": "node scripts/predeploy-verify.mjs --project prod --mode production",
+    "contract:check": "sh -c 'if lsof -i :5001 -sTCP:LISTEN -t >/dev/null 2>&1 && lsof -i :8081 -sTCP:LISTEN -t >/dev/null 2>&1; then node frontend/scripts/mpc07-contract-check.mjs; else npm run functions:build && firebase emulators:exec --only functions,firestore \"node frontend/scripts/mpc07-contract-check.mjs\"; fi'",
     "deploy": "npm run build --prefix frontend && firebase deploy",
     "deploy:hosting": "npm run build --prefix frontend && firebase deploy --only hosting",
     "deploy:functions": "firebase deploy --only functions",
     "deploy:all": "npm run build --prefix frontend && firebase deploy",
+    "deploy:staging": "npm run predeploy:verify:staging && firebase deploy --project staging",
+    "deploy:staging:hosting": "npm run build --prefix frontend -- --mode staging && firebase deploy --only hosting --project staging",
+    "deploy:prod": "npm run predeploy:verify:prod && firebase deploy --project prod",
     "prepare": "husky"
   },
   "devDependencies": {

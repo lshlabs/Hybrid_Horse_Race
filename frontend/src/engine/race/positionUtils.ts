@@ -24,7 +24,7 @@ export function positionToProgress(
   trackLengthM: number,
   options?: PositionToProgressOptions,
 ): number {
-  const { capAtOne } = { ...DEFAULT_OPTIONS, ...options }
+  const capAtOne = options?.capAtOne ?? DEFAULT_OPTIONS.capAtOne
   let progress = trackLengthM > 0 ? position / trackLengthM : 0
   if (capAtOne) {
     progress = Math.max(0, Math.min(1, progress))

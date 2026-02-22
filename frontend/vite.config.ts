@@ -24,4 +24,25 @@ export default defineConfig({
       reporter: ['text', 'html', 'lcov'],
     },
   },
+  build: {
+    // Phaser 엔진 청크는 특성상 큰 편이므로 경고 임계값을 엔진 크기에 맞춘다.
+    chunkSizeWarningLimit: 1300,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/phaser')) return 'vendor-phaser'
+          if (id.includes('node_modules/firebase')) return 'vendor-firebase'
+          if (id.includes('node_modules/react') || id.includes('node_modules/react-dom')) {
+            return 'vendor-react'
+          }
+          // NOTE:
+          // Forcing every game component into a single `game-core` chunk caused a circular
+          // dependency with `vendor-react` in production builds, which broke React namespace
+          // initialization (`forwardRef` became undefined at runtime). Let Rollup split app
+          // chunks naturally to avoid circular chunk init ordering issues.
+          return undefined
+        },
+      },
+    },
+  },
 })

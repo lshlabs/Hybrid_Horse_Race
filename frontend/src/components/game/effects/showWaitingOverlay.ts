@@ -14,7 +14,7 @@ export function showWaitingOverlay(
   options: {
     messageKey: string
     onComplete: () => void
-    durationMs?: number
+    durationMs?: number | null
     depth?: number
   },
 ) {
@@ -53,11 +53,20 @@ export function showWaitingOverlay(
     },
   })
 
-  scene.time.delayedCall(durationMs, () => {
+  let completed = false
+  const close = (shouldComplete: boolean) => {
+    if (completed) return
+    completed = true
     dotEvent.remove()
-    // 콜백을 먼저 호출해 다음 화면(예: 결과창)이 그려진 뒤 오버레이를 제거한다.
-    // 제거를 먼저 하면 한 프레임 동안 아래 씬(맵)이 비쳐 깜빡인다.
-    onComplete()
+    if (shouldComplete) onComplete()
     overlay.destroy()
-  })
+  }
+
+  if (typeof durationMs === 'number') {
+    scene.time.delayedCall(durationMs, () => close(true))
+  }
+
+  return {
+    close,
+  }
 }

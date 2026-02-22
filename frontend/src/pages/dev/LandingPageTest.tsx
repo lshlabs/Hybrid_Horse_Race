@@ -60,7 +60,7 @@ export function LandingPageTest() {
     await new Promise((resolve) => setTimeout(resolve, 500))
 
     try {
-      const playerId = getUserId()
+      const playerId = await getUserId()
       // Mock roomId 생성
       const newRoomId = `test-room-${Date.now()}`
 

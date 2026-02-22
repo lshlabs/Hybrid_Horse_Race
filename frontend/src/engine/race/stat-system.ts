@@ -1,11 +1,22 @@
 // =========================
 // 능력치 시스템
 // - 능력치 생성
-// - 정규화 (선형/비선형)
-// - 파생 파라미터 계산
+// - 정규화
+// - 레이스 계산용 파라미터 변환
 // =========================
 
 import type { Stats, StatName } from './types'
+import {
+  calcAccelFactor as calcAccelFactorCore,
+  calcMaxSpeed as calcMaxSpeedCore,
+  calcSpeedNormalized as calcSpeedNormalizedCore,
+  calcStaminaCostFactor as calcStaminaCostFactorCore,
+  calcStartAccelBoost as calcStartAccelBoostCore,
+  clamp as clampCore,
+  kmhToMs as kmhToMsCore,
+  normalizeLuck as normalizeLuckCore,
+  normalizeStatNonLinear as normalizeStatNonLinearCore,
+} from '../../../../shared/race-core/stat-system-core'
 import {
   DEFAULT_MAX_STAT,
   DEFAULT_SATURATION_RATE,
@@ -15,20 +26,11 @@ import {
   LUCK_ROLL_AT_20_MAX,
   LUCK_ROLL_AT_40_MIN,
   LUCK_ROLL_AT_40_MAX,
-  MIN_SPEED_KMH,
-  SPEED_BONUS_RANGE,
-  POWER_ACCEL_MIN,
-  POWER_ACCEL_MAX,
   TARGET_ACCEL_TIME_MAX_SEC,
   TARGET_ACCEL_TIME_MIN_SEC,
-  STAMINA_COST_FACTOR_MAX,
-  STAMINA_COST_FACTOR_MIN,
-  STAMINA_COST_REDUCTION,
   GUTS_FATIGUE_FLOOR_MIN,
   GUTS_FATIGUE_FLOOR_MAX,
   GUTS_FATIGUE_FLOOR_RANGE,
-  START_ACCEL_BOOST_BASE,
-  START_ACCEL_BOOST_RANGE,
   START_DELAY_MAX_SEC,
 } from './constants'
 
@@ -44,11 +46,13 @@ export function randInt(min: number, max: number): number {
 }
 
 export function clamp(v: number, min: number, max: number): number {
-  return v < min ? min : v > max ? max : v
+  // 공통 core 함수를 그대로 쓰되, 프론트에서 import 경로를 단순하게 유지하려고 래퍼를 둔다.
+  return clampCore(v, min, max)
 }
 
 export function kmhToMs(kmh: number): number {
-  return (kmh * 1000) / 3600
+  // 단위 변환도 shared core와 같은 계산을 쓰도록 맞춘다.
+  return kmhToMsCore(kmh)
 }
 
 /**
@@ -78,20 +82,18 @@ export function generateRandomStats(): Stats {
 
   let remaining = 80 - 6 * 8
   const MAX_STAT = 20
+  const incrementableStatNames = [...STAT_NAMES]
 
-  while (remaining > 0) {
-    // 20 미만인 능력치만 선택 가능
-    const availableStats = STAT_NAMES.filter((key) => stats[key] < MAX_STAT)
-
-    // 모든 능력치가 20에 도달했으면 종료 (이론적으로는 발생하지 않음: 6 * 20 = 120 > 80)
-    if (availableStats.length === 0) {
-      break
-    }
-
-    // 20 미만인 능력치 중 랜덤 선택
-    const key = availableStats[randInt(0, availableStats.length - 1)]
+  while (remaining > 0 && incrementableStatNames.length > 0) {
+    // 20 미만인 능력치 중 랜덤 선택 (상한 도달 시 후보 목록에서 제거)
+    const candidateIndex = randInt(0, incrementableStatNames.length - 1)
+    const key = incrementableStatNames[candidateIndex]
     stats[key] += 1
     remaining -= 1
+
+    if (stats[key] >= MAX_STAT) {
+      incrementableStatNames.splice(candidateIndex, 1)
+    }
   }
 
   return stats
@@ -104,9 +106,8 @@ export function generateRandomStats(): Stats {
 /**
  * 비선형 정규화 (지수 포화식)
  * - 초반 급격한 증가, 후반 완만한 증가 (지수 포화 곡선)
- * - 능력치 40에서 1.0이 되도록 정규화
- * - 능력치 40까지 비선형으로 증가
- * - 능력치 40 초과는 40으로 제한 (상한)
+ * - 최대 능력치에서 1.0이 되도록 정규화
+ * - 그 이상 값은 상한으로 본다.
  *
  * @param stat 능력치 값
  * @param maxStat 최대 능력치 (기본 40, 상한)
@@ -117,14 +118,7 @@ export function normalizeStatNonLinear(
   maxStat: number = DEFAULT_MAX_STAT,
   saturationRate: number = DEFAULT_SATURATION_RATE,
 ): number {
-  // 능력치 40 초과는 40으로 제한
-  const clampedStat = Math.min(stat, maxStat)
-  const x = clampedStat / maxStat
-  // 지수 포화식: 1 - exp(-k*x) 형태
-  // 능력치 40(x=1)에서 1.0이 되도록 정규화
-  const raw = 1 - Math.exp(-saturationRate * x)
-  const max = 1 - Math.exp(-saturationRate * 1) // x=1일 때의 값
-  return raw / max // 정규화하여 x=1일 때 1.0이 되도록
+  return normalizeStatNonLinearCore(stat, maxStat, saturationRate)
 }
 
 /**
@@ -133,11 +127,7 @@ export function normalizeStatNonLinear(
  * - 20 초과: 효율 감소 (1.0 + (luck - 20) / 40)
  */
 export function normalizeLuck(luck: number): number {
-  if (luck <= 20) {
-    return luck / 20
-  } else {
-    return 1.0 + (luck - 20) / 40 // 20 초과분은 0.5배 효율
-  }
+  return normalizeLuckCore(luck)
 }
 
 // =========================
@@ -159,16 +149,16 @@ export function rollCondition(luck: number): number {
   let minBonus: number
   let maxBonus: number
   if (normalized <= 1.0) {
-    // Luck 0~20: -10%~+10% → +0%~+20% 선형 보간
+    // 낮은 Luck 구간: 음수~양수 범위를 선형으로 이동시킨다.
     minBonus = LUCK_ROLL_AT_0_MIN + normalized * (LUCK_ROLL_AT_20_MIN - LUCK_ROLL_AT_0_MIN)
     maxBonus = LUCK_ROLL_AT_0_MAX + normalized * (LUCK_ROLL_AT_20_MAX - LUCK_ROLL_AT_0_MAX)
   } else if (normalized <= 1.5) {
-    // Luck 20~40: +0%~+20% → +10%~+50% 선형 보간
+    // 높은 Luck 구간: 상한을 더 크게 열어서 좋은 컨디션이 나오기 쉽게 한다.
     const t = (normalized - 1.0) / 0.5
     minBonus = LUCK_ROLL_AT_20_MIN + t * (LUCK_ROLL_AT_40_MIN - LUCK_ROLL_AT_20_MIN)
     maxBonus = LUCK_ROLL_AT_20_MAX + t * (LUCK_ROLL_AT_40_MAX - LUCK_ROLL_AT_20_MAX)
   } else {
-    // Luck 40 초과: 상한 유지
+    // 너무 높아도 여기서는 상한값으로 고정
     minBonus = LUCK_ROLL_AT_40_MIN
     maxBonus = LUCK_ROLL_AT_40_MAX
   }
@@ -187,9 +177,7 @@ export function rollCondition(luck: number): number {
  * - 지수 포화식으로 비선형 증가
  */
 export function calcMaxSpeed(speedStat: number): number {
-  const tSpeed = normalizeStatNonLinear(speedStat)
-  const maxSpeedKmh = MIN_SPEED_KMH + SPEED_BONUS_RANGE * tSpeed
-  return kmhToMs(maxSpeedKmh)
+  return calcMaxSpeedCore(speedStat)
 }
 
 /**
@@ -201,9 +189,7 @@ export function calcMaxSpeed(speedStat: number): number {
  * - 지수 포화식으로 비선형 증가
  */
 export function calcStaminaCostFactor(staminaStat: number): number {
-  const tStamina = normalizeStatNonLinear(staminaStat)
-  const factor = STAMINA_COST_FACTOR_MAX - STAMINA_COST_REDUCTION * Math.min(tStamina, 1.0)
-  return Math.max(STAMINA_COST_FACTOR_MIN, factor) // 최소값 보장
+  return calcStaminaCostFactorCore(staminaStat)
 }
 
 /**
@@ -214,8 +200,7 @@ export function calcStaminaCostFactor(staminaStat: number): number {
  * - 지수 포화식으로 비선형 증가
  */
 export function calcAccelFactor(powerStat: number): number {
-  const tPower = normalizeStatNonLinear(powerStat)
-  return POWER_ACCEL_MIN + (POWER_ACCEL_MAX - POWER_ACCEL_MIN) * tPower
+  return calcAccelFactorCore(powerStat)
 }
 
 /**
@@ -228,11 +213,11 @@ export function calcAccelFactor(powerStat: number): number {
 export function calcTargetAccelTime(powerStat: number, startStat: number): number {
   const tPower = normalizeStatNonLinear(powerStat)
   const tStart = normalizeStatNonLinear(startStat)
-  // tPower + tStart = 0 → MAX, tPower + tStart = 2.0 → MIN (능력치 40일 때)
+  // Power/Start 정규화 값 합으로 가속 시간 범위를 줄인다.
   const timeRange = (TARGET_ACCEL_TIME_MAX_SEC - TARGET_ACCEL_TIME_MIN_SEC) / 2.0
   const targetAccelTime = TARGET_ACCEL_TIME_MAX_SEC - (tPower + tStart) * timeRange
-  // 능력치 40 이상에서도 계속 감소 (능력치 차이 반영)
-  return Math.max(0.1, targetAccelTime) // 최소값만 보장 (0.1초 이하 방지)
+  // 너무 작은 값만 막고 나머지는 차이가 나게 둔다.
+  return Math.max(0.1, targetAccelTime)
 }
 
 /**
@@ -255,8 +240,7 @@ export function calcFatigueFloor(gutsStat: number): number {
  * - 지수 포화식으로 비선형 증가
  */
 export function calcStartAccelBoost(startStat: number): number {
-  const tStart = normalizeStatNonLinear(startStat)
-  return START_ACCEL_BOOST_BASE + START_ACCEL_BOOST_RANGE * tStart
+  return calcStartAccelBoostCore(startStat)
 }
 
 /**
@@ -268,15 +252,16 @@ export function calcStartAccelBoost(startStat: number): number {
  */
 export function calcStartDelay(startStat: number): number {
   const tStart = normalizeStatNonLinear(startStat)
-  const maxDelay = START_DELAY_MAX_SEC - tStart // Start 0 → 1.0초, Start 40 → 0초
+  const maxDelay = START_DELAY_MAX_SEC - tStart // Start가 높을수록 출발 딜레이가 줄어든다.
   return randFloat(0, Math.max(0, maxDelay))
 }
 
 /**
- * Speed 정규화 값 저장 (스태미나 페널티 계산용)
+ * Speed 정규화 값 저장용 함수
+ * 말 업데이트에서 스태미나 추가 소모 계산할 때 같이 사용한다.
  */
 export function calcSpeedNormalized(speedStat: number): number {
-  return normalizeStatNonLinear(speedStat)
+  return calcSpeedNormalizedCore(speedStat)
 }
 
 /**

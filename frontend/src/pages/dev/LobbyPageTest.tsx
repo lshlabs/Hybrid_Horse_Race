@@ -45,6 +45,7 @@ import { Button } from '../../components/ui/button'
 function createMockRoom(roomId: string): Room {
   return {
     title: `테스트 룸 (${roomId})`,
+    maxPlayers: 2,
     roundCount: 3,
     rerollLimit: 2,
     rerollUsed: 0,
@@ -81,9 +82,21 @@ export function LobbyPageTest() {
   const roomId = searchParams.get('roomId') || 'test-room-123'
   const urlPlayerId = searchParams.get('playerId')
 
+  const [resolvedPlayerId, setResolvedPlayerId] = useState<string>(
+    urlPlayerId || localStorage.getItem('dev_player_id') || '',
+  )
+
   // playerId 생성 책임 (개선 사항 1)
   // URL에 playerId가 없으면 신규 플레이어로 간주하고 생성
-  const playerId = urlPlayerId || getUserId()
+  useEffect(() => {
+    if (urlPlayerId) {
+      setResolvedPlayerId(urlPlayerId)
+      return
+    }
+    void getUserId().then((uid) => setResolvedPlayerId(uid))
+  }, [urlPlayerId])
+
+  const playerId = resolvedPlayerId
 
   // playerId를 localStorage에 저장 (개선 사항 7)
   useEffect(() => {
@@ -115,11 +128,12 @@ export function LobbyPageTest() {
   // Mock 데이터 (localStorage에서 가져온 정보 사용)
   const mockRoom = {
     ...createMockRoom(roomId),
+    maxPlayers: playerCount,
     roundCount,
     rerollLimit,
   }
   const [mockPlayers, setMockPlayers] = useState<Player[]>(() => {
-    const fresh = createMockPlayers(playerId)
+    const fresh = createMockPlayers(playerId || 'test-host-id')
     try {
       const customNames: Record<string, string> = JSON.parse(
         localStorage.getItem('dev_player_custom_names') || '{}',

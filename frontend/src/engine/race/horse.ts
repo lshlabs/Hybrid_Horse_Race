@@ -14,6 +14,10 @@ import {
 import { DEFAULT_RACE_TILES_COUNT, METERS_PER_TILE_M } from './trackConstants'
 import { positionToProgress } from './positionUtils'
 import {
+  applyHorseRankUpdate,
+  applySpecialAbilityToState,
+} from '../../../../shared/race-core/horse-logic-core'
+import {
   rollCondition,
   calcMaxSpeed,
   calcStaminaCostFactor,
@@ -32,26 +36,26 @@ export class Horse {
   baseStats: Stats
   effStats: EffectiveStats
 
-  // 파생 파라미터 (prepareForRace 전에는 HUD 표시용 기본값)
+  // 파생 파라미터 (prepareForRace 전에는 기본값으로 유지)
   maxSpeed_ms: number = 0
   maxStamina: number = 100
   accelFactor: number = 0
-  tSpeedNormalized: number = 0 // Speed 정규화 값 (스태미나 페널티 계산용)
+  tSpeedNormalized: number = 0 // Speed 정규화 값 (스태미나 추가 소모 계산에 사용)
 
-  // 스태미나 소모 관련
+  // 스태미나 관련 값
   staminaCostFactor: number = 1
 
-  // 피로 관련
+  // 피로 관련 값
   fatigueFloor: number = 0.55
 
-  // Start / Cons 관련
+  // Start / Cons 관련 값
   startAccelBoost: number = 1 // Start 기반 초반 가속 보너스
-  startStaminaShield: number = 1 // (현재는 사용 안 함, 필요시 재활용 가능)
-  consPaceFactor: number = 1 // 현재는 중립(1.0)로 둠
-  startDelay: number = 0 // Start 기반 출발 딜레이 (초)
-  targetAccelTime: number = 5.0 // Power와 Start에 따른 목표 가속 시간 (3~7초)
+  startStaminaShield: number = 1 // 지금은 안 쓰지만 나중에 확장할 때 쓰려고 남겨둠
+  consPaceFactor: number = 1 // 현재는 중립값으로 고정
+  startDelay: number = 0 // Start 기반 출발 딜레이(초)
+  targetAccelTime: number = 5.0 // Power/Start 기준 목표 가속 시간
 
-  // 특수 능력 관련
+  // 특수 능력 상태값
   lastSpurtTriggerProgress: number = 1.0 // 라스트 스퍼트 발동 진행률 (0.7~0.9)
   lastSpurtActive: boolean = false // 라스트 스퍼트 발동 여부
   overtakeBonusActive: boolean = false // 추월 보너스 활성화 여부
@@ -63,23 +67,24 @@ export class Horse {
   escapeCrisisValue: number = 0 // 위기 탈출 수치 (능력치 증가량)
   escapeCrisisUsed: boolean = false // 위기 탈출 사용 여부 (게임당 1번)
 
-  // 현재 상태 (m/s, m, s 단위 기준). stamina는 prepareForRace 전 HUD 표시용 100
+  // 현재 레이스 상태 (m/s, m, s 기준)
+  // stamina는 prepareForRace 전에 HUD 표시용으로 100을 넣어둔다.
   currentSpeed: number = 0 // m/s
   position: number = 0 // m
   stamina: number = 100
   finished: boolean = false
-  finishTime: number | null = null // s (시뮬레이션 시간)
+  finishTime: number | null = null // 완주 시점(시뮬레이션 시간 기준)
   /**
    * 시뮬레이션 트랙 길이 (미터).
    * prepareForRace(trackLengthM)로만 설정. 반드시 TileMapManager.getTrackLengthM() 반환값과 동일해야 함.
    */
   private trackLengthM: number = DEFAULT_RACE_TILES_COUNT * METERS_PER_TILE_M
-  raceStartTime: number = 0 // 실제 레이스 시작 시간 (출발 딜레이 반영)
+  raceStartTime: number = 0 // 출발 딜레이를 반영한 실제 출발 시점
 
-  // 컨디션 롤 기록 (디버그용)
+  // 컨디션 롤 기록 (디버그/HUD 확인용)
   conditionRoll: number = 0
 
-  // HUD 표시용 (추월 보너스)
+  // HUD 표시용 값
   lastStaminaRecovery: number = 0 // 마지막 스태미나 회복량 (HUD 표시용)
 
   constructor(name: string, baseStats: Stats) {
@@ -92,22 +97,19 @@ export class Horse {
    * 특수 능력 설정
    */
   setSpecialAbility(abilityType: string, abilityValue: number): void {
-    if (abilityType === 'lastSpurt') {
-      // abilityValue는 6~10 범위
-      // 수치가 높을수록 더 빨리 발동 (진행률 낮아짐)
-      // 수치 10 → 0.8 진행률 (400m)
-      // 수치 6 → 0.88 진행률 (440m)
-      // 공식: progress = 1.0 - (abilityValue / 10) * 0.2
-      this.lastSpurtTriggerProgress = 1.0 - (abilityValue / 10) * 0.2
-    } else if (abilityType === 'overtake') {
-      // abilityValue는 6~10 범위
-      // 수치가 높을수록 추월 시 더 큰 속도 증가
-      this.overtakeBonusValue = abilityValue
-    } else if (abilityType === 'escapeCrisis') {
-      // abilityValue는 6~10 범위
-      // 수치가 높을수록 더 큰 능력치 증가
-      this.escapeCrisisValue = abilityValue
-    }
+    // shared core helper에서 계산한 값을 이 클래스 필드에 다시 반영한다.
+    const next = applySpecialAbilityToState(
+      {
+        lastSpurtTriggerProgress: this.lastSpurtTriggerProgress,
+        overtakeBonusValue: this.overtakeBonusValue,
+        escapeCrisisValue: this.escapeCrisisValue,
+      },
+      abilityType,
+      abilityValue,
+    )
+    this.lastSpurtTriggerProgress = next.lastSpurtTriggerProgress
+    this.overtakeBonusValue = next.overtakeBonusValue
+    this.escapeCrisisValue = next.escapeCrisisValue
   }
 
   /**
@@ -115,35 +117,28 @@ export class Horse {
    * @param rank 현재 순위
    */
   updateRank(rank: number): void {
-    const wasFirstUpdate = this.currentRank === 999
-
-    this.previousRank = this.currentRank
-    this.currentRank = rank
-
-    // 첫 번째 업데이트는 추월 감지하지 않음 (순위 초기화)
-    if (wasFirstUpdate) {
-      return
-    }
-
-    // 추월 보너스: 순위가 올라가면 보너스 활성화 및 추월 횟수 증가 (중첩 적용)
-    // TODO: 플레이어 수가 적을 때는 추월 기회가 줄어들어 밸런스 조정이 필요할 수 있음
-    if (this.overtakeBonusValue > 0 && this.currentRank < this.previousRank) {
-      this.overtakeBonusActive = true
-      this.overtakeCount += 1 // 추월 횟수 증가 (중첩)
-
-      // 체력 회복 (수치와 관계없이 항상 +3)
-      this.stamina = Math.min(this.stamina + 3, this.maxStamina)
-      this.lastStaminaRecovery = 3 // HUD 표시용
-    }
-
-    // 위기 탈출: 순위가 4위 이하일 때 발동 (게임당 1번)
-    // TODO: 플레이어 수가 4명 미만일 때는 이 조건을 조정해야 할 수 있음
-    if (this.escapeCrisisValue > 0 && !this.escapeCrisisUsed && this.currentRank >= 4) {
-      this.escapeCrisisActive = true
-      this.escapeCrisisUsed = true // 사용 표시
-    } else {
-      this.escapeCrisisActive = false
-    }
+    // 순위 변화 처리도 shared core helper를 쓰고, 클래스 상태 반영만 여기서 한다.
+    const next = applyHorseRankUpdate(
+      {
+        currentRank: this.currentRank,
+        previousRank: this.previousRank,
+        maxStamina: this.maxStamina,
+        stamina: this.stamina,
+        overtakeBonusValue: this.overtakeBonusValue,
+        overtakeCount: this.overtakeCount,
+        escapeCrisisValue: this.escapeCrisisValue,
+        escapeCrisisUsed: this.escapeCrisisUsed,
+      },
+      rank,
+    )
+    this.previousRank = next.previousRank
+    this.currentRank = next.currentRank
+    this.stamina = next.stamina
+    this.overtakeCount = next.overtakeCount
+    this.overtakeBonusActive = next.overtakeBonusActive
+    this.lastStaminaRecovery = next.staminaRecovered
+    this.escapeCrisisActive = next.escapeCrisisActive
+    this.escapeCrisisUsed = next.escapeCrisisUsed
   }
 
   /**
@@ -155,19 +150,23 @@ export class Horse {
    * @param trackLengthM 트랙 길이(미터). TileMapManager.getTrackLengthM() 반환값과 동일.
    * @param _legacyFinishLineOffsetM 사용 안 함 (position=말 코 통일). API 호환용.
    */
-  prepareForRace(trackLengthM?: number, _legacyFinishLineOffsetM?: number): void {
+  prepareForRace(
+    trackLengthM?: number,
+    _legacyFinishLineOffsetM?: number,
+    fixedConditionRoll?: number,
+  ): void {
     void _legacyFinishLineOffsetM
     if (trackLengthM !== undefined) {
       this.trackLengthM = trackLengthM
     }
     const s = this.baseStats
 
-    // 1) Luck 기반 행운 롤
-    const cond = rollCondition(s.Luck)
+    // 1) Luck 기반 컨디션 롤
+    const cond = typeof fixedConditionRoll === 'number' ? fixedConditionRoll : rollCondition(s.Luck)
     const mult = 1.0 + cond
     this.conditionRoll = cond
 
-    // 컨디션은 Speed/Sta/Power/Guts/Start 에만 반영
+    // Luck은 직접 올리지 않고 다른 주요 능력치 보정에만 사용한다.
     this.effStats = {
       Speed: s.Speed * mult,
       Stamina: s.Stamina * mult,
@@ -201,13 +200,13 @@ export class Horse {
     this.startAccelBoost = calcStartAccelBoost(e.Start)
     this.startDelay = calcStartDelay(e.Start)
 
-    // 3) 초기 상태 세팅
+    // 3) 레이스 시작 전 상태 초기화
     this.currentSpeed = 0
     this.position = 0
     this.stamina = this.maxStamina
     this.finished = false
     this.finishTime = null
-    this.raceStartTime = this.startDelay // 실제 레이스 시작 시간 = 출발 딜레이
+    this.raceStartTime = this.startDelay // 말마다 출발 시간이 조금씩 다를 수 있다.
 
     // 특수 능력 초기화
     this.escapeCrisisUsed = false
@@ -229,12 +228,12 @@ export class Horse {
     // dt/currentTime은 시뮬레이션 시간(초) 기준
     if (this.finished) return
 
-    // 출발 딜레이 체크: 실제 레이스 시작 시간이 되기 전에는 움직이지 않음
+    // 출발 딜레이가 남아 있으면 아직 움직이지 않는다.
     if (currentTime < this.raceStartTime) {
       return
     }
 
-    // position = 말 코 위치(m). 코가 결승선에 닿으면 완주
+    // position은 말의 "코" 위치(m)로 계산한다.
     if (this.position >= this.trackLengthM) {
       this.finished = true
       if (this.finishTime === null) {
@@ -252,7 +251,7 @@ export class Horse {
 
     // 가속 계수 (Power 기반 + Start 기반 초반 버프)
     let accel = this.accelFactor
-    const startBoostDistance = this.trackLengthM * 0.2 // 초반 20% 구간 (500m→100m)
+    const startBoostDistance = this.trackLengthM * 0.2 // 초반 구간에서만 Start 보너스 강화
     if (this.position < startBoostDistance) {
       accel *= this.startAccelBoost
     }
@@ -272,7 +271,7 @@ export class Horse {
       targetSpeed *= Math.pow(1.0 + speedBonusPerOvertake, this.overtakeCount)
     }
 
-    // 최대 속도를 넘지 못하도록 제한
+    // 최종 속도는 최대 속도를 넘지 않게 제한
     targetSpeed = Math.min(targetSpeed, this.maxSpeed_ms)
 
     // 스태미나 소모 계산
@@ -280,10 +279,10 @@ export class Horse {
     const distanceThisStep = this.currentSpeed * dt
     const speedNorm = STAMINA_COST_SPEED_CAP_MPS > 0 ? speedForCost / STAMINA_COST_SPEED_CAP_MPS : 0
 
-    // 기본 소모 + 속도 비례 소모
+    // 기본 소모 + 현재 속도 비례 소모
     let staminaCostPerM = BASE_STAMINA_COST_PER_M + SPEED_STAMINA_COST_PER_M * speedNorm
 
-    // Speed 스탯이 높을수록 추가 스태미나 소모 페널티
+    // Speed가 높으면 추가 스태미나 소모가 붙는다.
     const speedPenalty = calcSpeedPenalty(this.tSpeedNormalized)
     staminaCostPerM *= speedPenalty
 
@@ -308,7 +307,7 @@ export class Horse {
       let staminaRatio = this.maxStamina > 0 ? this.stamina / this.maxStamina : 0
       staminaRatio = clamp(staminaRatio, 0, 1)
 
-      // 피로 보정 시작점: 85% 이하부터
+      // 스태미나 85% 아래부터 피로 보정 시작
       if (staminaRatio < 0.85) {
         const x = staminaRatio / 0.85
         const fatigueCurve = Math.pow(x, 0.8) // 완만한 감소

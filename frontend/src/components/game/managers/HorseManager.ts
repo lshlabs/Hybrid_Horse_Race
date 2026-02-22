@@ -10,6 +10,8 @@ import {
   createEscapeCrisisAugment,
 } from '../../../engine/race'
 
+// HorseManager는 "화면용 말 스프라이트"와 "시뮬레이션용 Horse"를 같이 관리한다.
+// 실제 물리 계산은 엔진 Horse가 하고, 이 파일은 배치/표시/동기화 쪽을 맡는다.
 /**
  * 화면에 그려지는 말(스프라이트) 전용 클래스
  * - 시뮬레이션 로직은 Horse(엔진)에서 처리
@@ -150,6 +152,8 @@ export default class HorseManager {
   private simHorses: Horse[] = []
   private playerIndicator?: Phaser.GameObjects.Image
   private playerIndicatorChain?: Phaser.Tweens.TweenChain
+  private playerIndicatorBaseX = 0
+  private playerIndicatorBaseY = 0
   private playerCount: number
   /** 각 말의 증강 (인덱스 = 말 번호 - 1), 현재 라운드만 */
   private horseAugments: Augment[][] = []
@@ -160,14 +164,14 @@ export default class HorseManager {
     this.scene = config.scene
     this.playerCount = config.playerCount ?? 8 // 기본값 8
 
-    // 말 애니메이션 생성 (스프라이트 프레임)
+    // 말 애니메이션은 씬당 한 번만 만들면 되지만, exists 체크가 있어서 여러 번 호출돼도 안전하다.
     this.createHorseAnimations()
 
     // 화면 배치용 말 생성
     const trackStartWorldXPx = config.getTrackStartWorldXPx()
     this.createHorses(config.gameHeight, trackStartWorldXPx)
 
-    // 시뮬레이션용 말 생성 (prepareForRace는 증강 선택 직후에만 호출)
+    // 시뮬레이션용 말 생성 (실제 레이스 준비는 증강 선택 후 prepareAllHorsesForRace에서 다시 맞춘다)
     this.initializeSimHorses(config.playerNames)
 
     if (config.playerHorseIndex !== undefined) {
@@ -180,7 +184,8 @@ export default class HorseManager {
   }
 
   private createHorseAnimations() {
-    // 신규 44x44 말 에셋: ready1/ready2(1-2-3-2-1 한 사이클), ready3(1-2-3-4-5-6-7-8 한 사이클), run(1~6 반복).
+    // 대기/달리기 애니메이션을 말 번호별로 만든다.
+    // ready1/ready2/ready3는 대기 모션 종류이고, run은 레이스 중 반복 재생된다.
     const IDLE_FRAME_ORDER = [0, 1, 2, 1, 0] // ready1/ready2: 1row,2row,3row,2row,1row
     const READY3_FRAME_ORDER = [0, 1, 2, 3, 4, 5, 6, 7] // ready3: 앞발 드는 동작 8프레임
 
@@ -231,16 +236,6 @@ export default class HorseManager {
     (_, i) => 0.45 + ((0.82 - 0.45) * i) / 7,
   )
 
-  /** 레인 순서에 넣을 말 번호(1~count)를 랜덤 셔플하여 반환 */
-  private static shuffleHorseOrder(count: number): number[] {
-    const order = Array.from({ length: count }, (_, i) => i + 1)
-    for (let i = order.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1))
-      ;[order[i], order[j]] = [order[j], order[i]]
-    }
-    return order
-  }
-
   /**
    * 대기 모션 시퀀스: 기본(0) 80%, 특수2(1) 10%, 특수3(2) 10%.
    * 시퀀스 길이 10으로 비율 맞춘 뒤 셔플하여 반복 재생.
@@ -263,10 +258,11 @@ export default class HorseManager {
     const maxYRatio = HorseManager.HORSE_Y_RATIOS_FULL[7]
     const yRatios = this.calculateHorseYRatios(minYRatio, maxYRatio)
 
-    // 레인별 말 번호 랜덤 배치 (1~playerCount 셔플)
-    const horseOrder = HorseManager.shuffleHorseOrder(this.playerCount)
+    // 레인 순서대로 말 번호를 고정 배치한다 (1~playerCount)
+    const horseOrder = Array.from({ length: this.playerCount }, (_, i) => i + 1)
 
     const startX = trackStartWorldXPx
+    // 화면 배치용 설정을 먼저 만들고, 아래에서 HorseRunner를 생성한다.
     const horseConfigs = yRatios.map((ratio, index) => {
       const n = horseOrder[index]
       return {
@@ -347,6 +343,7 @@ export default class HorseManager {
   private initializeSimHorses(playerNames?: string[]) {
     this.simHorses = []
     for (let i = 0; i < this.playerCount; i++) {
+      // 로컬 생성 시점에는 랜덤 스탯으로 만들고, authoritative 흐름에서는 이후 서버값으로 덮일 수 있다.
       const stats = generateRandomStats()
       const displayName = playerNames && playerNames[i] ? playerNames[i] : `Horse_${i + 1}`
       const simHorse = new Horse(displayName, stats)
@@ -376,6 +373,7 @@ export default class HorseManager {
     trackStartWorldXPx: number,
     arrowTextureKey: string,
   ) {
+    // 플레이어 말 위에 붙는 화살표는 trackStart 기준으로 초기 위치를 계산한다.
     const startX = trackStartWorldXPx
 
     const minYRatio = HorseManager.HORSE_Y_RATIOS_FULL[0]
@@ -387,6 +385,8 @@ export default class HorseManager {
       startX + HorseManager.ARROW_GAP_RIGHT + HorseManager.ARROW_DISPLAY_SIZE_PX / 2
     const indicatorY =
       this.scene.scale.height * playerHorseYRatio - HorseManager.HORSE_DISPLAY_HEIGHT_PX / 2
+    this.playerIndicatorBaseX = indicatorX
+    this.playerIndicatorBaseY = indicatorY
 
     this.playerIndicator = this.scene.add
       .image(indicatorX, indicatorY, arrowTextureKey)
@@ -397,8 +397,10 @@ export default class HorseManager {
       .setScrollFactor(0)
       .setVisible(false)
 
+    // 화살표 가이드는 "등장 -> 오른쪽으로 날아가며 사라짐"을 반복한다.
     this.playerIndicatorChain = this.scene.add.tweenchain({
       paused: true,
+      persist: true,
       loop: HorseManager.ARROW_LOOP_COUNT - 1,
       loopDelay: HorseManager.ARROW_LOOP_DELAY_MS,
       tweens: [
@@ -442,6 +444,7 @@ export default class HorseManager {
   }
 
   updateHorsePositions(screenX: number[]) {
+    // screenX 배열은 레인 순서와 같은 인덱스 순서라고 가정한다.
     for (let i = 0; i < this.horses.length && i < screenX.length; i++) {
       this.horses[i].updatePosition(screenX[i])
     }
@@ -449,7 +452,11 @@ export default class HorseManager {
 
   hidePlayerIndicator() {
     if (this.playerIndicator) {
-      this.playerIndicator.setVisible(false)
+      this.playerIndicator
+        .setVisible(false)
+        .setAlpha(0)
+        .setX(this.playerIndicatorBaseX)
+        .setY(this.playerIndicatorBaseY)
     }
     if (this.playerIndicatorChain && this.playerIndicatorChain.isPlaying()) {
       this.playerIndicatorChain.stop()
@@ -457,9 +464,12 @@ export default class HorseManager {
   }
 
   showPlayerIndicator() {
-    if (this.playerIndicator) {
-      this.playerIndicator.setVisible(true)
-    }
+    if (!this.playerIndicator) return
+    this.playerIndicator
+      .setVisible(true)
+      .setAlpha(0)
+      .setX(this.playerIndicatorBaseX)
+      .setY(this.playerIndicatorBaseY)
     if (this.playerIndicatorChain) {
       try {
         this.playerIndicatorChain.restart()
@@ -484,8 +494,10 @@ export default class HorseManager {
     for (let i = 0; i < this.simHorses.length; i++) {
       let randomAugment: Augment
       if (i === playerHorseIndex) {
+        // 플레이어 말은 실제 선택한 증강 사용
         randomAugment = playerAugment
       } else {
+        // 나머지 말은 같은 rarity 안에서 랜덤 증강 생성
         if (rarity === 'hidden') {
           const roll = Math.random()
           if (roll < 0.09) {
@@ -508,6 +520,7 @@ export default class HorseManager {
     }
 
     // 누적 증강에 이번 라운드 선택 추가 (결과 창에서 라운드별 누적 표시용)
+    // 결과 화면에서 누적 표시를 위해 라운드 증강을 따로 쌓아둔다.
     while (this.accumulatedAugments.length < this.simHorses.length) {
       this.accumulatedAugments.push([])
     }
@@ -530,6 +543,7 @@ export default class HorseManager {
       const augments = this.horseAugments[i] || []
       if (horse) {
         if (augments.length > 0) {
+          // 스탯 증가형 + 특수능력형을 같이 반영
           const augmentedStats = applyAugmentsToStats(horse.baseStats, augments)
           horse.baseStats = augmentedStats
           for (const augment of augments) {
@@ -538,6 +552,7 @@ export default class HorseManager {
             }
           }
         }
+        // 최종적으로 트랙 길이 기준 준비 상태(컨디션 포함)를 만든다.
         horse.prepareForRace(trackLengthM, finishLineOffsetM)
       }
     }
@@ -547,12 +562,18 @@ export default class HorseManager {
    * 증강 없이 모든 말에 prepareForRace만 호출 (컨디션 롤 포함).
    * 증강 선택을 취소했을 때, 레이스 시작 전에 한 번 호출.
    */
-  prepareAllHorsesForRace(getTrackLengthM: () => number, getFinishLineOffsetM?: () => number) {
+  prepareAllHorsesForRace(
+    getTrackLengthM: () => number,
+    getFinishLineOffsetM?: () => number,
+    resolveConditionRoll?: (index: number, horse: Horse) => number | undefined,
+  ) {
     const trackLengthM = getTrackLengthM()
     const finishLineOffsetM = getFinishLineOffsetM?.()
-    for (const horse of this.simHorses) {
-      horse.prepareForRace(trackLengthM, finishLineOffsetM)
-    }
+    this.simHorses.forEach((horse, index) => {
+      // 서버 authoritative에서 받은 컨디션 롤이 있으면 resolveConditionRoll로 고정해서 맞춘다.
+      const fixedConditionRoll = resolveConditionRoll?.(index, horse)
+      horse.prepareForRace(trackLengthM, finishLineOffsetM, fixedConditionRoll)
+    })
   }
 
   getHorseAugments(): Augment[][] {

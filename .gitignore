@@ -10,6 +10,8 @@ map-test/
 .env
 .env.*
 !.env.example
+!frontend/.env.staging.example
+!frontend/.env.production.example
 firebase-debug.log
 firestore-debug.log
 .runtimeconfig.json
@@ -46,6 +48,14 @@ docs/direct-function-test.md
 docs/phase1-completion-summary.md
 docs/phase2-completion-summary.md
 docs/hosting-guide.md
+
+# Project planning/operational docs (local only)
+/PROJECT_STATUS_REVIEW.md
+/REFACTORING_MASTER_PLAN.md
+/REFACTORING_PRINCIPLES_AUDIT.md
+/docs/root-docs/SHARED_ENGINE_UNIFICATION_REVIEW.md
+/DEPLOYMENT_RUNBOOK.md
+/DEPLOYMENT_RELEASE_LOG.md
 
 firestore-debug.log
 *.sh

@@ -35,6 +35,7 @@ export type SimulationResult = {
 export default class RaceRuntimeController {
   /** 레이스 시작 조건을 확인하고 시작 상태를 반환한다. */
   startRace(state: RaceRuntimeState): RaceRuntimeState {
+    // 이미 시작했거나 카운트다운/증강 선택 중이면 중복 시작을 막는다.
     if (state.isRaceStarted || state.augmentSelectionActive || state.isCountdownActive) {
       return state
     }
@@ -42,6 +43,7 @@ export default class RaceRuntimeController {
     return {
       ...state,
       isRaceStarted: true,
+      // 레이스 시작할 때 시뮬레이션 시간도 같이 0으로 리셋한다.
       simElapsedSec: 0,
       simTimeAccumulatorSec: 0,
       raceStartTimestampMs: performance.now(),
@@ -72,6 +74,7 @@ export default class RaceRuntimeController {
       stepped = true
       simTimeAccumulatorSec -= physicsDtSec
 
+      // 현재 위치 기준으로 임시 순위를 만든 뒤 rank 관련 능력 효과를 먼저 반영한다.
       const currentRanking = [...simHorses]
         .filter((h) => !h.finished)
         .sort((a, b) => b.position - a.position)
@@ -111,6 +114,7 @@ export default class RaceRuntimeController {
     mapManager.setTilePositionX(0)
     mapManager.updateStripePositions(0)
 
+    // 다음 세트 시작 전에 로컬 시뮬레이션 상태를 초기값으로 되돌린다.
     const simHorses = horseManager.getSimHorses()
     for (const simHorse of simHorses) {
       simHorse.position = 0

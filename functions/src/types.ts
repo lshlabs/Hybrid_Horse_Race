@@ -44,6 +44,7 @@ export type AugmentDefinition = Augment
 
 export interface Room {
   title: string
+  maxPlayers: number
   roundCount: number
   rerollLimit: number
   rerollUsed: number
@@ -58,6 +59,8 @@ export interface Player {
   avatar?: string
   isHost: boolean
   isReady: boolean
+  rerollUsed?: number
+  currentSetLuckBonus?: number
   selectedAugments: Array<{
     setIndex: number
     augmentId: string
@@ -75,12 +78,72 @@ export interface Player {
 
 export interface GameSet {
   setIndex: number
+  rarity?: AugmentRarity
   availableAugments: Augment[] // 최신 Augment 구조 사용
+  availableAugmentsByPlayer?: Record<string, Augment[]>
   selections: Record<string, string> // playerId -> augmentId
+  readyForNext?: Record<string, boolean>
   raceResult?: {
     rankings: Array<{ playerId: string; time: number; position: number }>
     startedAt: FirebaseFirestore.Timestamp
     finishedAt: FirebaseFirestore.Timestamp
+  }
+  raceState?: {
+    status: 'running' | 'completed'
+    scriptVersion: string
+    raceStateDocVersion?: string
+    startedAt: FirebaseFirestore.Timestamp
+    simStepMs?: number
+    outputFrameMs?: number
+    tickIntervalMs: number
+    trackLengthM: number
+    keyframes: Array<{
+      elapsedMs: number
+      positions: Record<string, number>
+      speeds: Record<string, number>
+      stamina: Record<string, number>
+      finished: Record<string, boolean>
+    }>
+    events: Array<
+      | {
+          id: string
+          type: 'overtake'
+          elapsedMs: number
+          playerId: string
+          fromRank: number
+          toRank: number
+        }
+      | {
+          id: string
+          type: 'lastSpurt'
+          elapsedMs: number
+          playerId: string
+        }
+      | {
+          id: string
+          type: 'finish'
+          elapsedMs: number
+          playerId: string
+          rank: number
+        }
+      | {
+          id: string
+          type: 'slowmoTrigger'
+          elapsedMs: number
+        }
+    >
+    slowmoTriggerMs: number
+    seedBundle?: {
+      raceSeedKey: string
+      conditionRollByPlayer: Record<string, number>
+    }
+    inputsSnapshotHash?: string
+    deterministicMeta?: {
+      source: string
+      seedKey: string
+      engineVersion: string
+      configHash: string
+    }
   }
   status: 'pending' | 'augmentSelection' | 'racing' | 'completed'
   createdAt: FirebaseFirestore.Timestamp
@@ -95,5 +158,3 @@ export interface RaceResult {
   startedAt: FirebaseFirestore.Timestamp
   finishedAt: FirebaseFirestore.Timestamp
 }
-
-

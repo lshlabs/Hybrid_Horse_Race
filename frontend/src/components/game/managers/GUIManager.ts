@@ -6,6 +6,36 @@ import type { Augment, AugmentStatType } from '../../../engine/race'
 /** 능력치 테이블 셀 순서 (createAbilityTable / updateStats와 동일) */
 const STAT_ORDER: AugmentStatType[] = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Luck']
 
+type GuiHorseStatsInput = {
+  currentSpeed: number // m/s
+  maxSpeed_ms: number // m/s
+  stamina: number
+  maxStamina: number
+  conditionRoll: number
+  baseStats?: {
+    Speed: number
+    Stamina: number
+    Power: number
+    Guts: number
+    Start: number
+    Luck: number
+  }
+  effStats?: {
+    Speed: number
+    Stamina: number
+    Power: number
+    Guts: number
+    Start: number
+    Luck: number
+  }
+  overtakeBonusActive?: boolean
+  overtakeBonusValue?: number
+  overtakeCount?: number
+  lastStaminaRecovery?: number
+}
+
+// GUIManager 안에서 능력치 표 셀 문자열 만들 때 쓰는 입력 형태
+// (Horse/authoritative frame에서 받은 값들을 화면용으로 묶어 넘길 때 사용)
 /** 영어 서수 접미사만: 1 → st, 2 → nd, 3 → rd, 4+ → th, 11/12/13 → th ... */
 function getOrdinalSuffix(n: number): string {
   const mod10 = n % 10
@@ -43,10 +73,11 @@ export default class GUIManager {
 
   // 좌상단 순위표 (2/6 + 숫자+이름 리스트)
   private static readonly RANKING_LEFT_MARGIN = 24
-  private static readonly RANKING_TOP_OFFSET_Y = 24
-  private static readonly RANKING_PANEL_WIDTH = 160
-  private static readonly RANK_ROW_FONT = 24
-  private static readonly RANK_ROW_GAP = 32
+  private static readonly RANKING_TOP_OFFSET_Y = 12
+  private static readonly RANKING_PANEL_MIN_WIDTH = 120
+  private static readonly RANKING_PANEL_PADDING = 24 // 좌우 패딩 (12 * 2)
+  private static readonly RANK_ROW_FONT = 20
+  private static readonly RANK_ROW_GAP = 26
 
   private scene: Phaser.Scene
   private sceneHeight: number // 전체 화면 높이 (HUD 전용 영역 없음)
@@ -57,6 +88,7 @@ export default class GUIManager {
   private rankingOrdinalSuffixText?: Phaser.GameObjects.Text // 작은 서수 접미사(st/nd/rd/th)
   private rankingRowTexts: Phaser.GameObjects.Text[] = [] // "1 이름", "2 이름" ...
   private rankingPanelBg?: Phaser.GameObjects.Graphics
+  private rankingPanelWidth = GUIManager.RANKING_PANEL_MIN_WIDTH
   private previousRankings: Map<string, number> = new Map()
   /** 순위 변경 강조 중인 말 이름 → 강조 종료 시각(ms, scene.time.now 기준). 이 시간 전에는 else에서 스타일 덮어쓰지 않음 */
   private rankingHighlightEndAt: Map<string, number> = new Map()
@@ -75,6 +107,34 @@ export default class GUIManager {
   private hudCardHitArea?: Phaser.GameObjects.Rectangle
   private showingAbilityFace = true
 
+  private getAugmentSelectionHudObjects(): Phaser.GameObjects.GameObject[] {
+    // 증강 선택 씬 위에 올릴 때 같이 숨기거나 보일 HUD 오브젝트 목록
+    return [
+      this.rankingPanelBg,
+      ...this.rankingRowTexts,
+      this.rankingRankText,
+      this.rankingOrdinalSuffixText,
+      this.timeText,
+      this.hudCardContainer,
+      this.hudCardBg,
+      this.hudCardHitArea,
+    ].filter((object) => object != null) as Phaser.GameObjects.GameObject[]
+  }
+
+  private setTopHudVisible(visible: boolean) {
+    this.rankingPanelBg?.setVisible(visible)
+    this.rankingRowTexts.forEach((text) => text.setVisible(visible))
+    this.rankingRankText?.setVisible(visible)
+    this.rankingOrdinalSuffixText?.setVisible(visible)
+    this.timeText?.setVisible(visible)
+  }
+
+  private setBottomHudVisible(visible: boolean) {
+    this.hudCardContainer?.setVisible(visible)
+    this.hudCardBg?.setVisible(visible)
+    this.hudCardHitArea?.setVisible(visible)
+  }
+
   constructor(scene: Phaser.Scene, sceneHeight: number, playerCount: number = 8) {
     this.scene = scene
     this.sceneHeight = sceneHeight
@@ -83,6 +143,7 @@ export default class GUIManager {
 
   // --- HUD 생성: 좌상단 순위(createRankingPanel) | 우상단 시간/라운드 | 우하단 HUD 카드 ---
   createHUD() {
+    // HUD는 우상단(순위/시간) + 중앙하단 카드(능력치/현재상태)로 나눠서 만든다.
     const width = this.scene.scale.width
 
     this.createTopRightPanel(width)
@@ -156,6 +217,7 @@ export default class GUIManager {
   /** 우상단 업데이트: 기록 시간(순위표 기록과 동일, 초 단위 소수점 3자리). 라운드 표시 없음. */
   updateTopRight(recordTimeSec: number) {
     if (this.timeText) {
+      // 소수점 3자리(ms)까지만 맞춰서 결과 표기와 형식을 맞춘다.
       const sec = Math.floor(recordTimeSec)
       const ms = Math.floor((recordTimeSec - sec) * 1000) % 1000 // 000~999만 표시 (1000 방지)
       this.timeText.setText(`${sec}:${String(ms).padStart(3, '0')}`)
@@ -340,11 +402,35 @@ export default class GUIManager {
 
   // --- 좌상단 순위표 (숫자+이름 리스트 표시) ---
   createRankingPanel() {
-    const panelX = GUIManager.RANKING_LEFT_MARGIN + GUIManager.RANKING_PANEL_WIDTH / 2
+    this.rankingPanelWidth = GUIManager.RANKING_PANEL_MIN_WIDTH
     const listStartY = GUIManager.RANKING_TOP_OFFSET_Y + 8
-    const panelLeft = panelX - GUIManager.RANKING_PANEL_WIDTH / 2
+    const panelLeft = GUIManager.RANKING_LEFT_MARGIN
 
-    // 바둑판 무늬 반투명 배경 (홀수/짝수 행 다른 색, border 없음)
+    this.updateRankingPanelBackground(this.rankingPanelWidth)
+
+    // 순위표 글씨: 반투명 회색 (텍스트 X는 항상 panelLeft + 12)
+    this.rankingRowTexts = []
+    for (let i = 0; i < this.playerCount; i++) {
+      const text = this.scene.add
+        .text(panelLeft + 12, listStartY + i * GUIManager.RANK_ROW_GAP, '', {
+          fontFamily: 'NeoDunggeunmo',
+          fontSize: `${GUIManager.RANK_ROW_FONT}px`,
+          color: GUIManager.RANKING_PANEL_COLOR,
+        })
+        .setStroke('#374151', 3)
+        .setOrigin(0, 0)
+        .setAlpha(GUIManager.RANKING_PANEL_ALPHA)
+        .setDepth(GUIManager.PANEL_TEXT_DEPTH)
+        .setScrollFactor(0)
+      this.rankingRowTexts.push(text)
+    }
+  }
+
+  /** 순위표 배경을 지정된 너비로 다시 그림 (닉네임 길이에 따라 동적 조정) */
+  private updateRankingPanelBackground(width: number) {
+    const listStartY = GUIManager.RANKING_TOP_OFFSET_Y + 8
+    const panelLeft = GUIManager.RANKING_LEFT_MARGIN
+
     this.rankingPanelBg?.destroy()
     this.rankingPanelBg = this.scene.add.graphics()
     for (let i = 0; i < this.playerCount; i++) {
@@ -356,33 +442,11 @@ export default class GUIManager {
       this.rankingPanelBg.fillRect(
         panelLeft,
         listStartY + i * GUIManager.RANK_ROW_GAP,
-        GUIManager.RANKING_PANEL_WIDTH,
+        width,
         GUIManager.RANK_ROW_GAP,
       )
     }
     this.rankingPanelBg.setDepth(GUIManager.PANEL_TEXT_DEPTH - 1).setScrollFactor(0)
-
-    // 순위표 글씨: 반투명 회색
-    this.rankingRowTexts = []
-    for (let i = 0; i < this.playerCount; i++) {
-      const text = this.scene.add
-        .text(
-          panelX - GUIManager.RANKING_PANEL_WIDTH / 2 + 12,
-          listStartY + i * GUIManager.RANK_ROW_GAP,
-          '',
-          {
-            fontFamily: 'NeoDunggeunmo',
-            fontSize: `${GUIManager.RANK_ROW_FONT}px`,
-            color: GUIManager.RANKING_PANEL_COLOR,
-          },
-        )
-        .setStroke('#374151', 3)
-        .setOrigin(0, 0)
-        .setAlpha(GUIManager.RANKING_PANEL_ALPHA)
-        .setDepth(GUIManager.PANEL_TEXT_DEPTH)
-        .setScrollFactor(0)
-      this.rankingRowTexts.push(text)
-    }
   }
 
   /** 순위 업데이트. playerHorseIndex: 플레이어 말 인덱스(0 기준), 좌상단 순위표 갱신용 */
@@ -396,6 +460,7 @@ export default class GUIManager {
     }>,
     playerHorseIndex?: number,
   ) {
+    // 화면 표시용 순위는 "완주 여부 -> 완주 시간 -> 현재 위치" 순서로 정렬한다.
     const sorted = [...horses].sort((a, b) => {
       if (a.finished && !b.finished) return -1
       if (!a.finished && b.finished) return 1
@@ -407,6 +472,7 @@ export default class GUIManager {
       return b.position - a.position
     })
 
+    // 플레이어 말 순위는 우상단 큰 숫자 표시에 사용
     const playerHorse =
       playerHorseIndex != null && horses[playerHorseIndex] ? horses[playerHorseIndex] : null
     const playerName = playerHorse?.name ?? null
@@ -417,7 +483,7 @@ export default class GUIManager {
       this.rankingOrdinalSuffixText.setText(getOrdinalSuffix(playerRank))
     }
 
-    // 맨 처음 10m 구간에서는 순위 변경 효과 미적용
+    // 출발 직후에는 순위가 자주 바뀌어서 너무 번쩍거릴 수 있으니 효과를 잠깐 막는다.
     const leadingDistanceM = Math.max(0, ...horses.map((h) => h.position))
     const allowRankChangeEffect = leadingDistanceM >= 5
 
@@ -437,6 +503,7 @@ export default class GUIManager {
       const rankChanged = previousRank !== undefined && previousRank !== rank
 
       if (rankChanged && allowRankChangeEffect) {
+        // 순위 상승은 초록, 하락은 빨강으로 잠깐 강조
         const isRankUp = previousRank > rank
         const highlightColor = isRankUp ? '#00ff00' : '#ff0000'
         text.setStyle({
@@ -455,6 +522,7 @@ export default class GUIManager {
           })
           text.setAlpha(normalAlpha)
         })
+        // alpha를 잠깐 흔들어서 눈에 띄게 한다.
         this.scene.tweens.add({
           targets: text,
           alpha: 0.6,
@@ -479,6 +547,22 @@ export default class GUIManager {
     }
     for (let i = maxCount; i < this.rankingRowTexts.length; i++) {
       this.rankingRowTexts[i]?.setText('')
+    }
+
+    // 가장 긴 행 텍스트 너비에 따라 배경 너비 동적 조정
+    let maxTextWidth = 0
+    for (let i = 0; i < maxCount; i++) {
+      const text = this.rankingRowTexts[i]
+      if (text) {
+        const bounds = text.getBounds()
+        if (bounds.width > maxTextWidth) maxTextWidth = bounds.width
+      }
+    }
+    const requiredWidth = Math.ceil(maxTextWidth) + GUIManager.RANKING_PANEL_PADDING
+    const newWidth = Math.max(GUIManager.RANKING_PANEL_MIN_WIDTH, requiredWidth)
+    if (newWidth !== this.rankingPanelWidth) {
+      this.rankingPanelWidth = newWidth
+      this.updateRankingPanelBackground(newWidth)
     }
   }
 
@@ -511,6 +595,7 @@ export default class GUIManager {
     const worldX = mat.tx
     const worldY = mat.ty
 
+    // 체력 줄 오른쪽에 +수치 텍스트를 띄우고 위로 올라가며 사라지게 한다.
     const recoveryText = this.scene.add
       .text(worldX + 70, worldY, `+${recoveryAmount}`, {
         fontFamily: 'NeoDunggeunmo',
@@ -548,18 +633,9 @@ export default class GUIManager {
     const showTop = mode === 'full'
     const showBottom = mode === 'full' || mode === 'bottomOnly'
     type Visible = { setVisible(v: boolean): void; setAlpha(a: number): void }
+    const targets = this.getAugmentSelectionHudObjects()
 
     if (mode === 'hidden' && options?.fadeOut) {
-      const targets = [
-        this.rankingPanelBg,
-        ...this.rankingRowTexts,
-        this.rankingRankText,
-        this.rankingOrdinalSuffixText,
-        this.timeText,
-        this.hudCardContainer,
-        this.hudCardBg,
-        this.hudCardHitArea,
-      ].filter((o) => o != null) as Phaser.GameObjects.GameObject[]
       this.scene.tweens.add({
         targets,
         alpha: 0,
@@ -576,16 +652,6 @@ export default class GUIManager {
     }
 
     if (mode === 'full' && options?.fadeIn) {
-      const targets = [
-        this.rankingPanelBg,
-        ...this.rankingRowTexts,
-        this.rankingRankText,
-        this.rankingOrdinalSuffixText,
-        this.timeText,
-        this.hudCardContainer,
-        this.hudCardBg,
-        this.hudCardHitArea,
-      ].filter((o) => o != null) as Phaser.GameObjects.GameObject[]
       targets.forEach((o) => {
         const v = o as unknown as Visible
         v.setVisible(true)
@@ -600,15 +666,8 @@ export default class GUIManager {
       return
     }
 
-    this.rankingPanelBg?.setVisible(showTop)
-    this.rankingRowTexts.forEach((t) => t.setVisible(showTop))
-    this.rankingRankText?.setVisible(showTop)
-    this.rankingOrdinalSuffixText?.setVisible(showTop)
-    this.timeText?.setVisible(showTop)
-
-    this.hudCardContainer?.setVisible(showBottom)
-    this.hudCardBg?.setVisible(showBottom)
-    this.hudCardHitArea?.setVisible(showBottom)
+    this.setTopHudVisible(showTop)
+    this.setBottomHudVisible(showBottom)
   }
 
   /**
@@ -643,130 +702,138 @@ export default class GUIManager {
     this.rankingHighlightEndAt.clear()
   }
 
-  // 능력치 텍스트 업데이트
-  updateStats(horse: {
-    currentSpeed: number // m/s
-    maxSpeed_ms: number // m/s
-    stamina: number
-    maxStamina: number
-    conditionRoll: number
-    baseStats?: {
-      Speed: number
-      Stamina: number
-      Power: number
-      Guts: number
-      Start: number
-      Luck: number
-    }
-    effStats?: {
-      Speed: number
-      Stamina: number
-      Power: number
-      Guts: number
-      Start: number
-      Luck: number
-    }
-    overtakeBonusActive?: boolean
-    overtakeBonusValue?: number
-    overtakeCount?: number
-    lastStaminaRecovery?: number
-  }) {
-    // m/s를 km/h로 변환
-    const msToKmh = (ms: number) => (ms * 3600) / 1000
-    const currentSpeedKmh = msToKmh(horse.currentSpeed)
-    const maxSpeedKmh = msToKmh(horse.maxSpeed_ms)
+  private convertMsToKmh(speedMs: number): number {
+    return (speedMs * 3600) / 1000
+  }
 
-    // 체력 계산
+  private getSafeSpeedMetrics(horse: GuiHorseStatsInput) {
+    // HUD 숫자가 튀지 않게 현재속도/최고속도 범위를 안전하게 자른다.
+    const safeMaxSpeedMs = Math.max(0, horse.maxSpeed_ms)
+    const safeCurrentSpeedMs = Math.max(0, Math.min(horse.currentSpeed, safeMaxSpeedMs))
+    return {
+      currentSpeedKmh: this.convertMsToKmh(safeCurrentSpeedMs),
+      maxSpeedKmh: this.convertMsToKmh(safeMaxSpeedMs),
+    }
+  }
+
+  private buildCurrentSpeedText(
+    horse: GuiHorseStatsInput,
+    currentSpeedKmh: number,
+    maxSpeedKmh: number,
+  ): string {
+    // 기본 속도 텍스트(현재/최고)
+    let speedText = i18next.t('game.currentSpeed', {
+      current: currentSpeedKmh.toFixed(1),
+      max: maxSpeedKmh.toFixed(1),
+    })
+
+    if (
+      !horse.overtakeBonusActive ||
+      !horse.overtakeBonusValue ||
+      horse.overtakeBonusValue <= 0 ||
+      horse.overtakeCount == null ||
+      horse.overtakeCount <= 0
+    ) {
+      return speedText
+    }
+
+    // 추월 보너스가 실제로 켜진 경우에만 추가 퍼센트를 붙여 보여준다.
+    // 수치별 속도 증가율: 6→1%, 7→1.5%, 8→2%, 9→2.5%, 10→3%
+    const speedBonusPerOvertake = (horse.overtakeBonusValue - 6) * 0.005 + 0.01
+    const bonusPercent = (Math.pow(1.0 + speedBonusPerOvertake, horse.overtakeCount) - 1) * 100
+    speedText += ` (+${bonusPercent.toFixed(1)}%)`
+    return speedText
+  }
+
+  private updateCurrentStateTexts(horse: GuiHorseStatsInput, currentSpeedKmh: number, maxSpeedKmh: number) {
+    if (this.statsCellTexts.length < 3) return
+
+    // 현재상태 면: 속도 / 체력 / 컨디션 보너스
     const staminaPercent = Math.round((horse.stamina / horse.maxStamina) * 100)
+    const conditionBonus = horse.conditionRoll * 100
+    const speedText = this.buildCurrentSpeedText(horse, currentSpeedKmh, maxSpeedKmh)
 
-    // 행운 보너스 계산
-    const conditionBonus = horse.conditionRoll * 100 // -10% ~ +10%
+    this.statsCellTexts[0].setText(speedText)
+    this.statsCellTexts[1].setText(i18next.t('game.health', { current: staminaPercent, max: 100 }))
 
-    // 오른쪽 박스: 현재 상태 텍스트 업데이트 (1열 3행) - i18next 사용
-    if (this.statsCellTexts.length >= 3) {
-      // 속도 : X / Y km/h (+X%)
-      let speedText = i18next.t('game.currentSpeed', {
-        current: currentSpeedKmh.toFixed(1),
-        max: maxSpeedKmh.toFixed(1),
+    if (horse.lastStaminaRecovery && horse.lastStaminaRecovery > 0) {
+      // 회복 직후 프레임에는 떠오르는 텍스트 연출도 같이 실행
+      this.showStaminaRecovery(horse.lastStaminaRecovery)
+    }
+
+    const bonusSign = conditionBonus >= 0 ? '+' : ''
+    this.statsCellTexts[2].setText(
+      i18next.t('game.conditionBonus', { bonus: `${bonusSign}${conditionBonus.toFixed(1)}` }),
+    )
+  }
+
+  private getAbilityStatLabels(): string[] {
+    return [
+      i18next.t('game.speed'),
+      i18next.t('game.stamina'),
+      i18next.t('game.power'),
+      i18next.t('game.guts'),
+      i18next.t('game.start'),
+      i18next.t('game.luck'),
+    ]
+  }
+
+  private getRoundedAbilityStatValues(horse: GuiHorseStatsInput): number[] | null {
+    if (!horse.effStats) return null
+    const stats = horse.effStats
+    return [
+      Math.round(stats.Speed * 10) / 10,
+      Math.round(stats.Stamina * 10) / 10,
+      Math.round(stats.Power * 10) / 10,
+      Math.round(stats.Guts * 10) / 10,
+      Math.round(stats.Start * 10) / 10,
+      Math.round(stats.Luck * 10) / 10,
+    ]
+  }
+
+  private getPreviewHighlightState() {
+    const highlightIndex =
+      this.previewAugment?.statType != null ? STAT_ORDER.indexOf(this.previewAugment.statType) : -1
+    const previewAdd =
+      highlightIndex >= 0 && this.previewAugment?.statValue != null ? this.previewAugment.statValue : null
+
+    return { highlightIndex, previewAdd }
+  }
+
+  private updateAbilityTexts(horse: GuiHorseStatsInput) {
+    if (this.abilityCellTexts.length < 6) return
+
+    const statValues = this.getRoundedAbilityStatValues(horse)
+    if (!statValues) return
+
+    const statLabels = this.getAbilityStatLabels()
+    const { highlightIndex, previewAdd } = this.getPreviewHighlightState()
+
+    // 증강 미리보기 중이면 해당 능력치 줄만 굵게/크게 보여준다.
+    for (let i = 0; i < 6; i++) {
+      const value = statValues[i]
+      const label = statLabels[i]
+      const isHighlight = i === highlightIndex
+      const addValue = isHighlight && previewAdd != null ? previewAdd : null
+      const sumValue = addValue != null ? value + addValue : value
+      const displayValue = addValue != null ? String(sumValue) : String(value)
+      const color = this.getStatColor(sumValue)
+
+      this.abilityCellTexts[i].setText(`${label} : ${displayValue}`)
+      this.abilityCellTexts[i].setStyle({
+        color,
+        fontStyle: isHighlight ? 'bold' : 'normal',
+        fontSize: isHighlight ? '16px' : '14px',
       })
-      if (
-        horse.overtakeBonusActive &&
-        horse.overtakeBonusValue &&
-        horse.overtakeBonusValue > 0 &&
-        horse.overtakeCount !== undefined &&
-        horse.overtakeCount > 0
-      ) {
-        // 수치별 속도 증가율: 6→1%, 7→1.5%, 8→2%, 9→2.5%, 10→3%
-        const speedBonusPerOvertake = (horse.overtakeBonusValue - 6) * 0.005 + 0.01
-        const bonusPercent = (Math.pow(1.0 + speedBonusPerOvertake, horse.overtakeCount) - 1) * 100
-        speedText += ` (+${bonusPercent.toFixed(1)}%)`
-      }
-      this.statsCellTexts[0].setText(speedText)
-
-      // 체력 : X / 100 (i18next 사용)
-      this.statsCellTexts[1].setText(
-        i18next.t('game.health', { current: staminaPercent, max: 100 }),
-      )
-
-      // 체력 회복 표시 (일시적)
-      if (horse.lastStaminaRecovery && horse.lastStaminaRecovery > 0) {
-        this.showStaminaRecovery(horse.lastStaminaRecovery)
-        // 다음 프레임에서 초기화되도록 함 (race-sim.ts에서 처리)
-      }
-
-      // 행운 보너스 : +2.3% 형식으로 표시
-      const bonusSign = conditionBonus >= 0 ? '+' : ''
-      this.statsCellTexts[2].setText(
-        i18next.t('game.conditionBonus', { bonus: `${bonusSign}${conditionBonus.toFixed(1)}` }),
-      )
     }
+  }
 
-    // 왼쪽 박스: 능력치 텍스트 업데이트 (2열 3행) - i18next 사용
-    if (this.abilityCellTexts.length >= 6 && horse.effStats) {
-      const stats = horse.effStats
-      // 순서: [속도, 지구력, 가속, 근성, 출발, 행운]
-      const statValues = [
-        Math.round(stats.Speed * 10) / 10,
-        Math.round(stats.Stamina * 10) / 10,
-        Math.round(stats.Power * 10) / 10,
-        Math.round(stats.Guts * 10) / 10,
-        Math.round(stats.Start * 10) / 10,
-        Math.round(stats.Luck * 10) / 10,
-      ]
-      const statLabels = [
-        i18next.t('game.speed'),
-        i18next.t('game.stamina'),
-        i18next.t('game.power'),
-        i18next.t('game.guts'),
-        i18next.t('game.start'),
-        i18next.t('game.luck'),
-      ]
-
-      const highlightIndex =
-        this.previewAugment?.statType != null
-          ? STAT_ORDER.indexOf(this.previewAugment.statType)
-          : -1
-      const previewAdd =
-        highlightIndex >= 0 && this.previewAugment?.statValue != null
-          ? this.previewAugment.statValue
-          : null
-
-      for (let i = 0; i < 6; i++) {
-        const value = statValues[i]
-        const label = statLabels[i]
-        const isHighlight = i === highlightIndex
-        const addValue = isHighlight && previewAdd != null ? previewAdd : null
-        const sumValue = addValue != null ? value + addValue : value
-        const displayValue = addValue != null ? String(sumValue) : String(value)
-        const color = this.getStatColor(sumValue) // 능력치 구간별 색상(회/초/노/빨), 강조 시에도 동일
-        this.abilityCellTexts[i].setText(`${label} : ${displayValue}`)
-        this.abilityCellTexts[i].setStyle({
-          color,
-          fontStyle: isHighlight ? 'bold' : 'normal',
-          fontSize: isHighlight ? '16px' : '14px',
-        })
-      }
-    }
+  // 능력치 텍스트 업데이트
+  updateStats(horse: GuiHorseStatsInput) {
+    // HUD 카드의 앞면/뒷면 텍스트를 같이 갱신한다.
+    const { currentSpeedKmh, maxSpeedKmh } = this.getSafeSpeedMetrics(horse)
+    this.updateCurrentStateTexts(horse, currentSpeedKmh, maxSpeedKmh)
+    this.updateAbilityTexts(horse)
   }
 
   /**

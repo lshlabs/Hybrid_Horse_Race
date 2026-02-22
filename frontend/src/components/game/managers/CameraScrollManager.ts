@@ -5,12 +5,12 @@ import type TileMapManager from '../managers/TileMapManager'
 
 /**
  * 카메라 스크롤 관리
- * - 말이 화면 중앙 도달 시 스크롤 시작
- * - 트랙 진행에 따라 카메라 이동
- * - 말 position → 월드 X 좌표 변환
+ * 말이 화면 중앙에 오기 전에는 고정하고, 중앙 도달 뒤부터 따라가게 만든다.
+ * 말 position(m)을 월드 X(px)로 바꾸는 계산도 여기서 같이 담당한다.
  */
 /**
- * 트랙 좌표/길이는 TileMapManager에서만 정의. 여기서는 mapManager getter만 사용.
+ * 트랙 좌표/길이 기준은 TileMapManager를 단일 소스로 사용한다.
+ * 여기서는 값 계산을 직접 만들지 않고 getter만 사용한다.
  */
 export default class CameraScrollManager {
   private scene: Phaser.Scene
@@ -53,7 +53,7 @@ export default class CameraScrollManager {
     return trackStartWorldXPx + horseScreenDistance
   }
 
-  /** 카메라 스크롤 업데이트 (update 루프에서 호출) */
+  /** 카메라 스크롤 업데이트 (RaceScene update에서 매 프레임 호출) */
   update(simHorses: Horse[], isRaceFinished: boolean) {
     const gameWidth = this.scene.scale.width
     const centerX = gameWidth / 2
@@ -63,7 +63,7 @@ export default class CameraScrollManager {
 
     if (!this.isScrolling) {
       for (const simHorse of simHorses) {
-        // 화면 중앙에 도달한 말이 생기면 그 시점부터 카메라 스크롤을 시작한다.
+        // 여기서부터는 말이 앞으로 가는 느낌보다 카메라가 따라가는 느낌으로 전환된다.
         const progress = positionToProgress(simHorse.position, trackLengthM, {
           capAtOne: true,
         })
@@ -97,7 +97,7 @@ export default class CameraScrollManager {
   private syncToMap() {
     const scaleFactor = this.mapManager.getScaleFactor()
     const logicalX = this.cameraScrollPx / scaleFactor
-    this.mapManager.setTilePositionX(Math.round(logicalX))
+    this.mapManager.setTilePositionX(logicalX)
   }
 
   getCameraScrollPx() {

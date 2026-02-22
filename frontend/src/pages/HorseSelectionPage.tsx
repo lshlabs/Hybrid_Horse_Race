@@ -1,11 +1,6 @@
 /**
- * 개발용 말 선택 테스트 페이지
- * Firebase 없이도 말 선택 기능을 테스트할 수 있습니다.
- *
- * 사용법:
- * 1. 개발 서버 실행: npm run dev
- * 2. 브라우저에서 /horse-selection 접근
- * 3. 말 선택 기능 테스트
+ * 개발용 말 선택 페이지
+ * 서버 호출이 실패해도 local fallback으로 화면 흐름을 테스트할 수 있게 만든다.
  */
 
 import { useEffect, useState } from 'react'
@@ -37,8 +32,12 @@ import { generateRandomStats, normalizeStatNonLinear } from '../engine/race/stat
 import { DEFAULT_MAX_STAT, DEFAULT_SATURATION_RATE } from '../engine/race/constants'
 import type { Stats } from '../engine/race/types'
 import { formatNickname, type NicknameData } from '../utils/nickname-generator'
+import { useRoom, type Player } from '../hooks/useRoom'
+import { selectHorse as selectHorseCallable } from '../lib/firebase-functions'
+import { getGuestSession } from '../lib/user-id'
+import { getRoomJoinToken } from '../lib/room-join-token'
 
-// 말 이름 키 풀 (랜덤 선택용)
+// 후보 말 생성 시 사용할 이름 번역 키 목록
 const HORSE_NAME_KEYS = [
   'whirlwind',
   'mir',
@@ -59,11 +58,9 @@ const HORSE_NAME_KEYS = [
 
 interface HorseCandidate {
   id: string
-  nameKey: string // 번역 키 저장
+  nameKey: string // 실제 이름 대신 번역 키를 저장해두고 렌더할 때 번역한다.
   stats: Stats
 }
-
-const MAX_REROLLS = 3
 
 interface SavedHorseData {
   name: string
@@ -72,8 +69,16 @@ interface SavedHorseData {
   selectedAt: string
 }
 
+interface HorseConfirmParams {
+  roomId: string
+  playerId: string
+  sessionToken: string
+  roomJoinToken: string
+}
+
 /**
  * 새로운 말 후보 3마리 생성
+ * 이름은 중복되지 않게 뽑고, 능력치는 랜덤 생성 함수를 사용한다.
  */
 function createNewCandidates(): HorseCandidate[] {
   const newCandidates: HorseCandidate[] = []
@@ -82,7 +87,7 @@ function createNewCandidates(): HorseCandidate[] {
   for (let i = 0; i < 3; i++) {
     const stats = generateRandomStats()
 
-    // 중복되지 않는 이름 키 선택
+    // 이름이 겹치면 다시 뽑는다. (너무 오래 돌지 않게 시도 횟수 제한)
     let nameKey: string
     let attempts = 0
     do {
@@ -95,12 +100,70 @@ function createNewCandidates(): HorseCandidate[] {
 
     newCandidates.push({
       id: `horse-${Date.now()}-${i}`,
-      nameKey, // 번역 키만 저장
+      nameKey, // 언어가 바뀌어도 다시 번역할 수 있게 키만 저장
       stats,
     })
   }
 
   return newCandidates
+}
+
+function readDevSelectedHorseForPlayer(playerId: string): SavedHorseData | null {
+  const saved = localStorage.getItem('dev_selected_horses')
+  if (!saved) return null
+
+  const horsesData = JSON.parse(saved) as Record<string, SavedHorseData>
+  return horsesData[playerId] ?? null
+}
+
+function registerDevSelectedHorseSync(params: {
+  playerId: string
+  onSelectedHorseLoaded: (horse: SavedHorseData) => void
+}): () => void {
+  const syncSelectedHorse = () => {
+    try {
+      const horse = readDevSelectedHorseForPlayer(params.playerId)
+      if (horse) {
+        params.onSelectedHorseLoaded(horse)
+      }
+    } catch (err) {
+      console.warn('[HorseSelectionPageTest] Failed to read from localStorage:', err)
+    }
+  }
+
+  const handleStorageChange = (e: StorageEvent) => {
+    if (e.key === 'dev_selected_horses') {
+      syncSelectedHorse()
+    }
+  }
+
+  syncSelectedHorse()
+  window.addEventListener('storage', handleStorageChange)
+  const interval = setInterval(syncSelectedHorse, 500)
+
+  return () => {
+    window.removeEventListener('storage', handleStorageChange)
+    clearInterval(interval)
+  }
+}
+
+function buildSelectedHorseFromRealtimePlayer(player: Player | undefined): SavedHorseData | null {
+  if (!player?.horseStats) return null
+
+  const totalStats =
+    player.horseStats.Speed +
+    player.horseStats.Stamina +
+    player.horseStats.Power +
+    player.horseStats.Guts +
+    player.horseStats.Start +
+    player.horseStats.Luck
+
+  return {
+    name: player.name,
+    stats: player.horseStats,
+    totalStats,
+    selectedAt: new Date().toISOString(),
+  }
 }
 
 export function HorseSelectionPage() {
@@ -110,39 +173,57 @@ export function HorseSelectionPage() {
   const isDev = true
 
   const roomId = searchParams.get('roomId')
-  const playerId = searchParams.get('playerId') || localStorage.getItem('dev_player_id') || ''
+  const [playerId, setPlayerId] = useState(localStorage.getItem('dev_player_id') || '')
+  const [sessionToken, setSessionToken] = useState('')
+  const [roomJoinToken, setRoomJoinToken] = useState<string | null>(
+    roomId ? getRoomJoinToken(roomId) : null,
+  )
+  const { room, players, loading } = useRoom(roomId)
 
-  // 게임 설정을 localStorage에서 가져오기 (개선 사항 3)
-  const roomConfig = (() => {
-    try {
-      const saved = localStorage.getItem('dev_room_config')
-      if (saved) {
-        return JSON.parse(saved)
-      }
-    } catch (err) {
-      console.warn('[HorseSelectionPageTest] Failed to load room config from localStorage:', err)
-    }
-    // 기본값
-    return {
-      playerCount: 2,
-      roundCount: 3,
-      rerollLimit: 2,
-    }
-  })()
+  useEffect(() => {
+    void getGuestSession().then((session) => {
+      setPlayerId(session.guestId)
+      setSessionToken(session.sessionToken)
+    })
+  }, [])
 
-  const playerCount = roomConfig.playerCount
-  const roundCount = roomConfig.roundCount
-  const rerollLimit = roomConfig.rerollLimit
+  useEffect(() => {
+    setRoomJoinToken(roomId ? getRoomJoinToken(roomId) : null)
+  }, [roomId])
 
   const [candidates, setCandidates] = useState<HorseCandidate[]>([])
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [rerollsUsed, setRerollsUsed] = useState(0)
   const [selectedHorse, setSelectedHorse] = useState<SavedHorseData | null>(null)
-  const [isBannerCollapsed, setIsBannerCollapsed] = useState(true)
   const [isStatChartDialogOpen, setIsStatChartDialogOpen] = useState(false)
-  const [useRadarChart, setUseRadarChart] = useState(true) // true: RadarChart, false: Grid with bars
+  const [useRadarChart, setUseRadarChart] = useState(true) // true면 레이더 차트, false면 바 보기
+  const realtimeCurrentPlayer = players.find((p) => p.id === playerId) ?? null
+  const confirmedPlayersCount = players.filter((p) => !!p.horseStats).length
+  const totalPlayersCount = players.length
+  const isHorseConfirmed = !!realtimeCurrentPlayer?.horseStats || selectedHorse !== null
+
+  const navigateWithRoomAndPlayer = (pathname: '/lobby' | '/race' | '/race-result') => {
+    if (!roomId || !playerId) return
+    const params = new URLSearchParams({ roomId, playerId })
+    navigate(`${pathname}?${params.toString()}`, { replace: true })
+  }
+
+  const handleRoomStatusRedirect = (status: string) => {
+    if (status === 'waiting') {
+      navigateWithRoomAndPlayer('/lobby')
+      return
+    }
+
+    if (status === 'augmentSelection' || status === 'racing' || status === 'setResult') {
+      navigateWithRoomAndPlayer('/race')
+      return
+    }
+
+    if (status === 'finished') {
+      navigateWithRoomAndPlayer('/race-result')
+    }
+  }
 
   useEffect(() => {
     if (!isDev) {
@@ -150,80 +231,63 @@ export function HorseSelectionPage() {
     }
   }, [isDev, navigate])
 
-  // LobbyPageTest에서 전달된 데이터 확인 및 로그 출력
+  useEffect(() => {
+    if (!roomId) {
+      navigate('/', { replace: true })
+      return
+    }
+    if (!loading && !room) {
+      navigate('/', { replace: true })
+    }
+  }, [loading, navigate, room, roomId])
+
+  useEffect(() => {
+    if (!roomId || !room || !playerId) return
+    handleRoomStatusRedirect(room.status)
+  }, [navigate, playerId, room, roomId])
+
+  // roomId 없이 들어온 개발 테스트 케이스를 찾기 쉽게 로그를 남긴다.
   useEffect(() => {
     if (!isDev) return
 
-    // 데이터가 없으면 경고
+    // roomId가 없으면 로비에서 정상 이동하지 않은 경우일 수 있다.
     if (!roomId) {
       console.warn('[HorseSelectionPageTest] No roomId received from LobbyPageTest')
     }
   }, [isDev, roomId, playerId])
 
-  // 초기 말 후보 생성
+  // 첫 진입 시 후보 3마리를 생성
   useEffect(() => {
+    // 단순 초기화(조건 1개 + 상태 설정 1개)라 현재는 helper로 분리하지 않는다.
     if (candidates.length === 0) {
       setCandidates(createNewCandidates())
     }
   }, [candidates.length])
 
-  // localStorage에서 선택한 말 데이터 확인 (개선 사항 4: playerId 기준 구조)
+  // 개발용 fallback 경로: localStorage에 저장된 선택 결과도 같이 따라간다.
   useEffect(() => {
     if (!isDev || !playerId) return
 
-    const checkSavedHorse = () => {
-      try {
-        const saved = localStorage.getItem('dev_selected_horses')
-        if (saved) {
-          const horsesData = JSON.parse(saved) as Record<string, SavedHorseData>
-          if (horsesData[playerId]) {
-            setSelectedHorse(horsesData[playerId])
-          }
-        }
-      } catch (err) {
-        console.warn('[HorseSelectionPageTest] Failed to read from localStorage:', err)
-      }
-    }
-
-    checkSavedHorse()
-
-    // localStorage 변경 감지
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'dev_selected_horses') {
-        checkSavedHorse()
-      }
-    }
-
-    window.addEventListener('storage', handleStorageChange)
-
-    // 주기적으로 확인 (같은 탭에서 변경된 경우)
-    const interval = setInterval(checkSavedHorse, 500)
-
-    return () => {
-      window.removeEventListener('storage', handleStorageChange)
-      clearInterval(interval)
-    }
+    return registerDevSelectedHorseSync({
+      playerId,
+      onSelectedHorseLoaded: setSelectedHorse,
+    })
   }, [isDev, playerId])
 
-  // 리롤 처리
-  const handleReroll = () => {
-    if (rerollsUsed >= MAX_REROLLS) {
-      setError(t('horseSelection.rerollMaxError', { count: MAX_REROLLS }))
-      return
-    }
+  useEffect(() => {
+    if (!playerId || players.length === 0) return
+    const currentPlayer = players.find((p) => p.id === playerId)
+    const nextSelectedHorse = buildSelectedHorseFromRealtimePlayer(currentPlayer)
+    if (!nextSelectedHorse) return
+    setSelectedHorse(nextSelectedHorse)
+  }, [playerId, players])
 
-    setCandidates(createNewCandidates())
-    setSelectedIndex(null)
-    setRerollsUsed((prev) => prev + 1)
-    setError(null)
-  }
-
-  // 스탯 총합 계산
+  // 카드 표시/저장 데이터에서 공통으로 쓰는 총합 계산
   const getTotalStats = (stats: Stats): number => {
     return stats.Speed + stats.Stamina + stats.Power + stats.Guts + stats.Start + stats.Luck
   }
 
-  // RadarChart 데이터 생성
+  // 레이더 차트에 바로 넣을 형태로 변환
   const getRadarChartData = (stats: Stats) => {
     return [
       { stat: t('statsShort.speed'), value: stats.Speed },
@@ -235,35 +299,35 @@ export function HorseSelectionPage() {
     ]
   }
 
-  // RadarChart 설정
+  // 레이더 차트 색상 설정
   const getStatChartConfig = () => {
     return {
       value: {
         label: '',
-        color: 'hsl(217 91% 60%)', // Tailwind Blue
+        color: 'hsl(217 91% 60%)', // 눈에 잘 보이는 파란색
       },
     } satisfies ChartConfig
   }
 
-  // 능력치 수치에 따른 색상 반환 (GUIManager.ts와 동일한 로직)
+  // 능력치 숫자 색상 (게임 HUD와 비슷한 기준 사용)
   const getStatColor = (value: number): string => {
     if (value < 11) {
-      return '#9ca3af' // 회색 (낮음: 0~10)
+      return '#9ca3af' // 낮은 수치
     } else if (value < 14) {
-      return '#10b981' // 초록색 (보통: 11~13)
+      return '#10b981' // 보통
     } else if (value < 18) {
-      return '#eab308' // 노란색 (좋음: 14~17)
+      return '#eab308' // 좋은 편
     } else {
-      return '#f87171' // 빨간색 (높음: 18~20)
+      return '#f87171' // 높은 편
     }
   }
 
-  // 비선형 정규화 차트 데이터 생성
+  // 비선형 정규화가 어떻게 올라가는지 설명용 차트 데이터
   const getStatChartData = () => {
     const data: Array<{ stat: number; normalized: number; linear: number }> = []
     for (let stat = 0; stat <= DEFAULT_MAX_STAT; stat += 1) {
       const normalized = normalizeStatNonLinear(stat, DEFAULT_MAX_STAT, DEFAULT_SATURATION_RATE)
-      const linear = stat / DEFAULT_MAX_STAT // 선형 비교용
+      const linear = stat / DEFAULT_MAX_STAT // 비교용(선형 기준선)
       data.push({ stat, normalized, linear })
     }
     return data
@@ -280,80 +344,149 @@ export function HorseSelectionPage() {
     },
   } satisfies ChartConfig
 
-  // 확인 처리 (Mock)
+  const getHorseConfirmValidationError = (): string | null => {
+    if (selectedIndex == null || isSubmitting || isHorseConfirmed) return 'skip'
+    if (!roomId) return t('horseSelection.roomIdMissing')
+    if (!playerId) return 'playerId가 필요합니다.'
+    if (!sessionToken) return '세션 토큰이 필요합니다.'
+    if (!roomJoinToken) return '룸 참가 토큰이 필요합니다. 로비에서 다시 입장해주세요.'
+    return null
+  }
+
+  const buildSavedHorseData = (candidate: HorseCandidate): SavedHorseData => {
+    const totalStats = getTotalStats(candidate.stats)
+    return {
+      name: t(`horseNames.${candidate.nameKey}`),
+      stats: candidate.stats,
+      totalStats,
+      selectedAt: new Date().toISOString(),
+    }
+  }
+
+  const trySubmitHorseSelectionRealtime = async (
+    candidate: HorseCandidate,
+    params: HorseConfirmParams,
+  ): Promise<boolean> => {
+    try {
+      await selectHorseCallable({
+        roomId: params.roomId,
+        playerId: params.playerId,
+        sessionToken: params.sessionToken,
+        joinToken: params.roomJoinToken,
+        horseStats: candidate.stats,
+      })
+      return true
+    } catch (callableErr) {
+      console.warn(
+        '[HorseSelectionPage] selectHorse callable failed, fallback to local:',
+        callableErr,
+      )
+      return false
+    }
+  }
+
+  const saveHorseSelectionToLocalFallback = (
+    horseData: SavedHorseData,
+    currentPlayerId: string,
+  ) => {
+    try {
+      const saved = localStorage.getItem('dev_selected_horses')
+      const horsesData = saved ? JSON.parse(saved) : {}
+      horsesData[currentPlayerId] = horseData
+
+      const playerIds: string[] = JSON.parse(localStorage.getItem('dev_player_ids') || '[]')
+      const nicknameDataMap: Record<string, NicknameData> = JSON.parse(
+        localStorage.getItem('dev_player_nickname_data') || '{}',
+      )
+      const customNames: Record<string, string> = JSON.parse(
+        localStorage.getItem('dev_player_custom_names') || '{}',
+      )
+
+      playerIds.forEach((id) => {
+        if (id !== currentPlayerId && !horsesData[id]) {
+          const playerName =
+            customNames[id] ||
+            (nicknameDataMap[id] ? formatNickname(nicknameDataMap[id]) : `플레이어 ${id}`)
+
+          const randomStats = generateRandomStats()
+          const randomTotalStats = Object.values(randomStats).reduce((sum, val) => sum + val, 0)
+          horsesData[id] = {
+            name: playerName,
+            stats: randomStats,
+            totalStats: randomTotalStats,
+            selectedAt: new Date().toISOString(),
+          }
+        }
+      })
+
+      localStorage.setItem('dev_selected_horses', JSON.stringify(horsesData))
+
+      const selectedCount = Object.values(horsesData).filter(
+        (entry) => entry && typeof entry === 'object' && 'stats' in entry,
+      ).length
+      if (selectedCount >= playerIds.length && playerIds.length > 0) {
+        navigateWithRoomAndPlayer('/race')
+      }
+    } catch (err) {
+      console.warn('[HorseSelectionPageTest] Failed to save horse data:', err)
+    }
+  }
+
+  const getSelectedHorseCandidateForConfirm = (): HorseCandidate | null => {
+    if (selectedIndex == null) return null
+    return candidates[selectedIndex] ?? null
+  }
+
+  const buildHorseConfirmParams = (): HorseConfirmParams | null => {
+    if (!roomId || !playerId || !sessionToken || !roomJoinToken) return null
+    return { roomId, playerId, sessionToken, roomJoinToken }
+  }
+
+  const submitHorseSelection = async (
+    selectedHorseCandidate: HorseCandidate,
+    confirmParams: HorseConfirmParams,
+  ): Promise<SavedHorseData> => {
+    const horseData = buildSavedHorseData(selectedHorseCandidate)
+    const callableSuccess = await trySubmitHorseSelectionRealtime(
+      selectedHorseCandidate,
+      confirmParams,
+    )
+
+    if (!callableSuccess) {
+      saveHorseSelectionToLocalFallback(horseData, confirmParams.playerId)
+    }
+
+    return horseData
+  }
+
+  // 확인 버튼 처리
+  // 서버 호출이 실패하면 local fallback으로 최소한 테스트 흐름은 이어간다.
   const handleConfirm = async () => {
-    if (selectedIndex == null || isSubmitting) return
-
-    if (!roomId) {
-      setError(t('horseSelection.roomIdMissing'))
+    const validationError = getHorseConfirmValidationError()
+    if (validationError === 'skip') return
+    if (validationError) {
+      setError(validationError)
       return
     }
 
-    if (!playerId) {
-      setError('playerId가 필요합니다.')
+    const selectedHorseCandidate = getSelectedHorseCandidateForConfirm()
+    if (!selectedHorseCandidate) {
+      setError(t('horseSelection.selectFailed'))
+      return
+    }
+    const confirmParams = buildHorseConfirmParams()
+    if (!confirmParams) {
+      setError(t('horseSelection.selectFailed'))
       return
     }
 
-    const selectedHorseCandidate = candidates[selectedIndex]
     setError(null)
     setIsSubmitting(true)
 
-    // Mock: 약간의 지연 시뮬레이션
-    await new Promise((resolve) => setTimeout(resolve, 500))
-
     try {
-      const totalStats = getTotalStats(selectedHorseCandidate.stats)
-      const horseData: SavedHorseData = {
-        name: t(`horseNames.${selectedHorseCandidate.nameKey}`), // 번역된 이름 저장
-        stats: selectedHorseCandidate.stats,
-        totalStats,
-        selectedAt: new Date().toISOString(),
-      }
-
-      // localStorage에 저장 (개선 사항 4: playerId 기준 구조)
-      try {
-        const saved = localStorage.getItem('dev_selected_horses')
-        const horsesData = saved ? JSON.parse(saved) : {}
-        horsesData[playerId] = horseData
-
-        // 모든 플레이어의 능력치 생성 (다른 플레이어들은 랜덤 생성)
-        const playerIds: string[] = JSON.parse(localStorage.getItem('dev_player_ids') || '[]')
-        const nicknameDataMap: Record<string, NicknameData> = JSON.parse(
-          localStorage.getItem('dev_player_nickname_data') || '{}',
-        )
-        const customNames: Record<string, string> = JSON.parse(
-          localStorage.getItem('dev_player_custom_names') || '{}',
-        )
-
-        playerIds.forEach((id) => {
-          if (id !== playerId && !horsesData[id]) {
-            // 다른 플레이어의 이름 가져오기 (커스텀 이름 우선)
-            const playerName =
-              customNames[id] ||
-              (nicknameDataMap[id] ? formatNickname(nicknameDataMap[id]) : `플레이어 ${id}`)
-
-            // 다른 플레이어의 능력치는 랜덤 생성
-            const randomStats = generateRandomStats()
-            const randomTotalStats = Object.values(randomStats).reduce((sum, val) => sum + val, 0)
-            horsesData[id] = {
-              name: playerName,
-              stats: randomStats,
-              totalStats: randomTotalStats,
-              selectedAt: new Date().toISOString(),
-            }
-          }
-        })
-
-        localStorage.setItem('dev_selected_horses', JSON.stringify(horsesData))
-      } catch (err) {
-        console.warn('[HorseSelectionPageTest] Failed to save horse data:', err)
-      }
-
+      const horseData = await submitHorseSelection(selectedHorseCandidate, confirmParams)
       setSelectedHorse(horseData)
-
-      // 성공하면 자동으로 다음 페이지로 이동 (roomId와 playerId만 전달)
-      const params = new URLSearchParams({ roomId, playerId })
-      navigate(`/race?${params.toString()}`)
+      // 성공 후 이동은 여기서 바로 하지 않고 room.status 구독으로 전원 동기화한다.
     } catch (err) {
       console.error('Failed to select horse:', err)
       const errorMessage = err instanceof Error ? err.message : t('horseSelection.selectFailed')
@@ -375,72 +508,7 @@ export function HorseSelectionPage() {
 
   return (
     <div className="flex w-full flex-1 flex-col items-center justify-center">
-      {/* 개발용 안내 */}
-      {isBannerCollapsed ? (
-        /* 접었을 때: 펼치기 버튼만 표시 */
-        <button
-          onClick={() => setIsBannerCollapsed(false)}
-          className="fixed top-2 left-2 z-50 rounded-lg bg-black/80 px-3 py-2 text-white backdrop-blur-sm transition hover:bg-black/90 shadow-lg"
-          aria-label="배너 펼치기"
-        >
-          <span className="text-sm">▼ 개발 배너</span>
-        </button>
-      ) : (
-        /* 펼쳤을 때: 전체 배너 표시 */
-        <div className="fixed top-0 left-0 right-0 z-50 bg-black/80 p-4 text-white">
-          <div className="mx-auto max-w-7xl">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold">🧪 말 선택 테스트 모드</h2>
-              <button
-                onClick={() => setIsBannerCollapsed(true)}
-                className="ml-4 rounded bg-gray-700/50 px-3 py-1 text-sm transition hover:bg-gray-700/70"
-                aria-label="배너 접기"
-              >
-                ▲
-              </button>
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
-              {roomId && (
-                <div>
-                  <span className="text-gray-400">Room ID: </span>
-                  <span className="font-mono">{roomId}</span>
-                </div>
-              )}
-              {playerId && (
-                <div>
-                  <span className="text-gray-400">Player ID: </span>
-                  <span className="font-mono">{playerId}</span>
-                </div>
-              )}
-              <div>
-                <span className="text-gray-400">설정: </span>
-                <span className="font-mono">
-                  {playerCount}명 / {roundCount}라운드 / 리롤 {rerollLimit}회
-                </span>
-              </div>
-              {!roomId && (
-                <div className="rounded bg-yellow-600/20 px-3 py-1 border border-yellow-500/40">
-                  <span className="text-yellow-400">⚠️ roomId가 전달되지 않았습니다.</span>
-                </div>
-              )}
-              {selectedHorse && (
-                <div className="flex items-center gap-2 rounded bg-green-600/20 px-3 py-1 border border-green-500/40">
-                  <span className="text-green-400">✓ 선택됨:</span>
-                  <span className="font-mono text-green-300">{selectedHorse.name}</span>
-                </div>
-              )}
-              <button
-                onClick={() => navigate('/')}
-                className="rounded bg-blue-600 px-3 py-1 text-sm hover:bg-blue-700"
-              >
-                🔄 처음부터 다시 테스트
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 독립적으로 구현한 말 선택 UI */}
+      {/* 말 선택 화면 본문 */}
       <div className="flex w-full flex-1 items-center justify-center">
         <div className="w-full max-w-6xl rounded-3xl border border-white/10 bg-surface/80 p-8 shadow-surface backdrop-blur-lg">
           <div className="mb-10">
@@ -474,7 +542,7 @@ export function HorseSelectionPage() {
               </button>
             </div>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              {t('horseSelection.subtitle', { count: MAX_REROLLS })}
+              {t('horseSelection.subtitleNoReroll')}
             </p>
           </div>
 
@@ -484,7 +552,7 @@ export function HorseSelectionPage() {
             </div>
           )}
 
-          {/* 말 선택 카드 (3개) */}
+          {/* 후보 말 카드 3장 */}
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {candidates.map((candidate, index) => {
               const isSelected = selectedIndex === index
@@ -494,11 +562,11 @@ export function HorseSelectionPage() {
                   key={candidate.id}
                   type="button"
                   onClick={() => setSelectedIndex(index)}
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || isHorseConfirmed}
                   className={clsx(
                     'text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
                     isSelected ? 'scale-[1.02]' : 'hover:scale-[1.01]',
-                    isSubmitting && 'opacity-50 cursor-not-allowed',
+                    (isSubmitting || isHorseConfirmed) && 'opacity-50 cursor-not-allowed',
                   )}
                 >
                   <NeonCard
@@ -509,10 +577,10 @@ export function HorseSelectionPage() {
                       isSelected ? 'ring-2 ring-primary' : 'ring-1 ring-white/10',
                     )}
                   >
-                    {/* 구분선 */}
+                    {/* 카드 헤더/본문 구분선 */}
                     <div className="border-t border-border/50" />
 
-                    {/* 카드 플립 컨테이너 */}
+                    {/* 차트 보기/바 보기 전환용 플립 컨테이너 */}
                     <div
                       className="relative w-full flex-1 flex items-center justify-center"
                       style={{ perspective: '1000px' }}
@@ -524,7 +592,7 @@ export function HorseSelectionPage() {
                           transform: useRadarChart ? 'rotateY(0deg)' : 'rotateY(180deg)',
                         }}
                       >
-                        {/* 앞면: RadarChart */}
+                        {/* 앞면: 레이더 차트 */}
                         <div
                           className="w-full h-full flex items-center justify-center"
                           style={{
@@ -564,7 +632,7 @@ export function HorseSelectionPage() {
                           </ChartContainer>
                         </div>
 
-                        {/* 뒷면: 2열 3행 그리드 */}
+                        {/* 뒷면: 2열 3행 능력치 바 */}
                         <div
                           className="absolute inset-0 w-full flex items-center justify-center"
                           style={{
@@ -642,29 +710,33 @@ export function HorseSelectionPage() {
             })}
           </div>
 
-          {/* 리롤 및 확인 버튼 */}
+          {/* 말 선택 확정 버튼 */}
           <div className="mt-8 flex items-center justify-end gap-3">
             <button
               type="button"
-              onClick={handleReroll}
-              disabled={rerollsUsed >= MAX_REROLLS || isSubmitting}
-              className="rounded-full border border-primary/40 bg-primary/10 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {t('horseSelection.rerollCount', { used: rerollsUsed, max: MAX_REROLLS })}
-            </button>
-            <button
-              type="button"
-              disabled={selectedIndex == null || isSubmitting}
+              disabled={selectedIndex == null || isSubmitting || isHorseConfirmed}
               onClick={handleConfirm}
               className="rounded-full bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-neon transition hover:bg-primary/80 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-muted-foreground"
             >
-              {isSubmitting ? t('horseSelection.processing') : t('horseSelection.confirm')}
+              {isSubmitting
+                ? t('horseSelection.processing')
+                : isHorseConfirmed
+                  ? t('horseSelection.waitingAfterConfirm')
+                  : t('horseSelection.confirm')}
             </button>
           </div>
+          {isHorseConfirmed && (
+            <p className="mt-3 text-right text-xs text-muted-foreground">
+              {t('horseSelection.waitingPlayers', {
+                current: confirmedPlayersCount,
+                total: totalPlayersCount,
+              })}
+            </p>
+          )}
         </div>
       </div>
 
-      {/* 능력치 비선형 차트 다이얼로그 */}
+      {/* 능력치 정규화 설명 다이얼로그 */}
       <Dialog open={isStatChartDialogOpen} onOpenChange={setIsStatChartDialogOpen}>
         <DialogContent className="max-w-2xl rounded-3xl border-none bg-surface [&>button]:hidden">
           <Card className="border-none bg-surface">

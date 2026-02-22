@@ -1,5 +1,15 @@
 import Phaser from 'phaser'
 import type { Room, Player } from '../../../../hooks/useRoom'
+import {
+  getAugmentSelection,
+  prepareRace,
+  getRaceState,
+  getSetResult,
+  readyNextSet,
+  rerollAugments,
+  selectAugment,
+  startRace,
+} from '../../../../lib/firebase-functions'
 
 // 플레이어 표시 화살표
 import rightArrowUrl from '../../../../assets/images/etc/right-arrow.png'
@@ -32,12 +42,82 @@ import RaceResultScene from '../result/RaceResultScene'
 import RaceDataSync, { type RaceGameData } from './controllers/RaceDataSync'
 import RaceRuntimeController, { type RaceRuntimeState } from './controllers/RaceRuntimeController'
 import RaceFlowUI from './controllers/RaceFlowUI'
+import { computeAuthoritativeRenderElapsedMs as computeAuthoritativeRenderElapsedMsHelper } from './helpers/authoritative-sync'
+import {
+  buildNextSetSyncRequestContext as buildNextSetSyncRequestContextHelper,
+  resolveReadyNextSetResponseAction,
+  resolveRoomStatusNextSetAction,
+  resolveWaitingNextSetRoomUpdateAction,
+  shouldResumeAfterAugmentSelectionWait,
+  type NextSetTransitionAction,
+} from './helpers/augment-wait-flow'
+import {
+  AUTHORITATIVE_DEBUG_HOTKEYS,
+  buildAuthoritativeDebugOverlayText as buildAuthoritativeDebugOverlayTextHelper,
+  buildAuthoritativeDebugSnapshotLine as buildAuthoritativeDebugSnapshotLineHelper,
+  shouldRenderAuthoritativeDebugOverlay as shouldRenderAuthoritativeDebugOverlayHelper,
+} from './helpers/debug-overlay'
+import {
+  buildRaceFinalResultEventDetail,
+  hasAuthoritativeRoundResultContext,
+  getMissingRoundResultIndexes as getMissingRoundResultIndexesHelper,
+  mapAuthoritativeRankingsToRoundEntries as mapAuthoritativeRankingsToRoundEntriesHelper,
+  resolveFinalResultBackfillAction,
+} from './helpers/result-recovery'
+import {
+  buildRaceStartBootstrapDebugPayload,
+  shouldMarkInitialAuthoritativeFrameReceived,
+  shouldReleaseRaceStartOverlay,
+} from './helpers/race-start-bootstrap'
 
-/** 물리 시뮬레이션 스텝(초, 고정) - 레이스 기록에 영향 없음. 변경 시 수치 적분 결과가 달라짐 */
+type AuthoritativeRaceFrame = {
+  elapsedMs: number
+  positions: Record<string, number>
+  speeds: Record<string, number>
+  stamina: Record<string, number>
+  finished: Record<string, boolean>
+}
+
+/** 물리 계산용 고정 스텝(초). 기록 시간은 서버 결과를 쓰지만 움직임 느낌에는 영향이 있다. */
 const PHYSICS_DT_SEC = 0.02
+const AUTHORITATIVE_POLL_INTERVAL_MS = 150
+// 폴링보다 약간 늦게 렌더하면 다음 키프레임이 들어와 있을 확률이 높아서 덜 끊겨 보인다.
+const AUTHORITATIVE_RENDER_DELAY_MS = 90
+// 서버 시간으로 바로 점프하지 않고 조금씩 따라가게 해서 시간축이 튀는 느낌을 줄인다.
+const AUTHORITATIVE_TIME_SOFT_CORRECTION_ALPHA = 0.15
+// 탭 복귀/폴링 지연으로 차이가 너무 커지면 바로 맞춘다. 천천히 맞추면 더 어색할 수 있다.
+const AUTHORITATIVE_TIME_HARD_SNAP_MS = 600
+// 위치 오차가 큰 경우만 hard snap을 쓰고, 보통은 부드럽게 따라가게 한다.
+// 값은 현재 튜닝값이라서 DEV 오버레이 보고 다시 조절할 수 있다.
+const AUTHORITATIVE_POSITION_HARD_SNAP_M = 2.5
+// 일반 구간에서는 한 프레임에 일부만 보정해서 갑자기 튀는 느낌을 줄인다.
+const AUTHORITATIVE_POSITION_SOFT_BLEND = 0.28
+const AUTHORITATIVE_FINISH_ZONE_M = 12
+const AUTHORITATIVE_FINISH_ZONE_HARD_SNAP_M = 4.5
+const AUTHORITATIVE_FINISH_ZONE_SOFT_BLEND = 0.4
+const AUTHORITATIVE_FINISH_ZONE_MAX_CORRECTION_M = 0.85
+const AUTHORITATIVE_FINISH_SLOWMO_HARD_SNAP_M = 6.0
+const AUTHORITATIVE_FINISH_SLOWMO_SOFT_BLEND = 0.12
+const AUTHORITATIVE_FINISH_SLOWMO_MAX_CORRECTION_M = 0.45
+// 평소 구간에서는 서버 시간 따라잡기 보정을 조금 더 크게 준다.
+const AUTHORITATIVE_DRIFT_CORRECTION_NORMAL = { gain: 0.16, min: -3, max: 14 }
+// 슬로모 구간은 보정이 더 눈에 보여서 보정량을 작게 제한한다.
+const AUTHORITATIVE_DRIFT_CORRECTION_SLOWMO = { gain: 0.04, min: -1.5, max: 1.2 }
+const AUTHORITATIVE_EVENT_CONSUME_TOLERANCE_MS = 24
+const AUTHORITATIVE_VISUAL_FINISH_EPSILON_M = 0.08
+const AUTHORITATIVE_VISUAL_FINISH_FALLBACK_MS = 1200
+const FINAL_RESULT_BACKFILL_RETRY_MAX = 3
+const RACE_START_BOOTSTRAP_MIN_DURATION_MS = 700
+const RACE_START_BOOTSTRAP_MAX_WAIT_MS = 3000
+const RACE_SCENE_EVENTS = {
+  FINISH_SEQUENCE_SLOWMO: 'finish-sequence-slowmo',
+  FINISH_SEQUENCE_SLOWMO_RESTORE: 'finish-sequence-slowmo-restore',
+  FINISH_SEQUENCE_HORSE_CROSSED: 'finish-sequence-horse-crossed',
+  FINISH_SEQUENCE_DONE: 'finish-sequence-done',
+} as const
 
 export default class RaceScene extends Phaser.Scene {
-  /** 씬 전환 사이 공통 대기 오버레이 노출 시간 */
+  /** 씬 전환 사이에 공통으로 보여주는 대기 오버레이 시간 */
   private static readonly WAITING_DURATION_MS = 3000
 
   // ─── 레이스 상태 ─────────────────────────────────────────────
@@ -45,22 +125,25 @@ export default class RaceScene extends Phaser.Scene {
   private isRaceStarted = false
   private isCountdownActive = false
 
-  // 시뮬레이션 누적 시간(초). fixed-step을 돌리기 위해 프레임마다 누적한다.
+  // fixed-step 계산용 누적 시간(초). 프레임마다 쌓아뒀다가 물리 계산에 사용한다.
   private simTimeAccumulatorSec = 0
-  // 레이스 진행 속도 스케일(1 = 정상). 슬로모는 이 값만 조절한다.
+  // 레이스 재생 속도(1 = 정상). 슬로모는 이 값만 바꾼다.
   private simPlaybackScale = 1
-  // 슬로모 적용/복귀 상태 플래그
+  // 슬로모 적용 중인지 체크
   private simSlowmoActive = false
-  // 슬로모 시작한 프레임에는 horse-crossed 무시 (같은 프레임에 바로 복귀 방지)
+  // 슬로모를 켠 같은 프레임에는 crossed 이벤트를 무시해서 바로 복귀하지 않게 한다.
   private simSlowmoStartedThisFrame = false
-  // 슬로모 복귀 트윈 길이(ms). 시뮬레이션 속도를 1로 되돌리는 데 사용.
+  // 슬로모에서 정상 속도로 돌아올 때 쓰는 트윈 시간(ms)
   private simSlowmoRestoreMs = 300
 
   // ─── 레이스 종료 연출 ───────────────────────────────────────
   private isResultSceneShown = false
+  /** 레이스 전체 축하 연출(FINISH 배너/컨페티) 시작 여부 */
   private isFinishSequenceTriggered = false
-  /** FINISH 배너·파티클 연출이 끝났는지. 결과 집계 오버레이는 이 후에 표시 */
+  /** FINISH 배너/파티클이 끝났는지. 결과 집계 오버레이는 이 뒤에 보여준다. */
   private finishSequenceDone = false
+  /** 결과 집계 오버레이(“결과를 집계하는 중...”)를 이미 시작했는지 */
+  private isResultAggregationStarted = false
   // ─── 게임 영역 (전체 화면, HUD는 오버레이) ────────────────────
   private gameAreaHeight = 0
 
@@ -71,16 +154,16 @@ export default class RaceScene extends Phaser.Scene {
   private cameraScrollManager!: CameraScrollManager
   private countdownManager!: CountdownManager
 
-  /** 증강 선택 시 레이스 씬에 그리는 반투명 오버레이 (뎁스는 하단 HUD 카드 아래) */
+  /** 증강 선택 중 레이스 씬 위에 깔리는 반투명 오버레이 (HUD 카드보다 아래 뎁스) */
   private augmentDimOverlay?: Phaser.GameObjects.Rectangle
 
   // ─── 시뮬레이션 ──────────────────────────────────────────────
-  // 시뮬레이션 경과 시간(초). 말의 step/finishTime 계산에 사용.
+  // 레이스 재생 경과 시간(초). 말 step/finishTime 계산에 사용한다.
   private simElapsedSec = 0
-  // 실제(벽시계) 시작 시각(ms). HUD 표시용 경과시간 계산에만 사용.
+  // 실제 시작 시각(ms). 로컬 기준 경과시간 계산이 필요할 때만 사용한다.
   private raceStartTimestampMs = 0
 
-  // 플레이어 말 인덱스 (0 = 1번 말, 1 = 2번 말, ...)
+  // 현재 플레이어 말 인덱스 (0 = 1번 말, 1 = 2번 말 ...)
   private playerHorseIndex = 0
 
   // 세트 관련
@@ -89,16 +172,83 @@ export default class RaceScene extends Phaser.Scene {
 
   // 증강 관련
   private selectedAugments: Augment[] = []
-  private remainingRerolls = 3 // 남은 리롤 횟수 (세트 간 공유, room.rerollLimit에서 읽음)
+  private remainingRerolls = 3 // 현재 플레이어 남은 리롤 횟수
   private augmentSelectionActive = false
 
   // Firebase 데이터 저장
   private roomId?: string
   private playerId?: string
+  private sessionToken?: string
+  private roomJoinToken?: string | null
   private room?: Room
   private players?: Player[]
+  private waitingOverlayHandle?: { close: (shouldComplete: boolean) => void }
+  private isWaitingForOtherAugmentSelections = false
+  private isWaitingForNextSetTransition = false
+  private nextSetSyncPollEvent?: Phaser.Time.TimerEvent
+  private isSyncingNextSetTransition = false
+  private isServerRaceRequested = false
+  private isServerRacePrepared = false
+  private isPollingServerRaceResult = false
+  private isBootstrappingRaceStart = false
+  private raceStartBootstrapReadyForCountdown = false
+  private raceStartBootstrapBeganAtMs: number | null = null
+  private raceStartBootstrapMinReadyAtMs = 0
+  private hasReceivedInitialAuthoritativeFrame = false
+  private hasReceivedAnyAuthoritativePollResponse = false
+  private raceStartBootstrapTimeoutEvent?: Phaser.Time.TimerEvent
+  private serverRacePollEvent?: Phaser.Time.TimerEvent
+  private authoritativeKeyframe?: AuthoritativeRaceFrame
+  private authoritativeNextKeyframe?: AuthoritativeRaceFrame
+  private authoritativeFrameBuffer: AuthoritativeRaceFrame[] = []
+  private authoritativeEventsWindow: Array<{
+    id: string
+    type: string
+    elapsedMs: number
+    rank?: number
+    playerId?: string
+  }> = []
+  private consumedRaceEventIds = new Set<string>()
+  private authoritativeFinishedPlayerIds = new Set<string>()
+  private authoritativeElapsedMs: number = 0
+  private authoritativeNowMs: number = 0
+  private smoothedElapsedMs: number | null = null
+  private lastRenderedElapsedMs: number = 0
+  private lastAuthoritativePollClientTimeMs: number = 0
+  private authoritativeWinnerFinishedEventSeen = false
+  private authoritativeRaceStateStatus: 'prepared' | 'running' | 'completed' | null = null
+  private authoritativeFinishPendingSinceMs: number | null = null
+  private authoritativeMetrics = {
+    frameCount: 0,
+    hardSnapCount: 0,
+    softCorrectionCount: 0,
+    timeHardSnapCount: 0,
+    positionErrorSum: 0,
+    positionErrorMax: 0,
+  }
+  private authoritativeDebugText?: Phaser.GameObjects.Text
+  private authoritativeDebugLastRenderMs = 0
+  private authoritativeDebugOverlayEnabled = true
+  private readonly handleAuthoritativeDebugHotkey = (event: KeyboardEvent) => {
+    if (!import.meta.env.DEV || event.repeat) return
+    if (event.key === AUTHORITATIVE_DEBUG_HOTKEYS.TOGGLE_OVERLAY) {
+      event.preventDefault()
+      this.toggleAuthoritativeDebugOverlay()
+      return
+    }
+    if (event.key === AUTHORITATIVE_DEBUG_HOTKEYS.COPY_SNAPSHOT) {
+      event.preventDefault()
+      void this.copyAuthoritativeDebugOverlaySnapshot()
+    }
+  }
+  private authoritativeRacePlan:
+    | {
+        rankings: Array<{ playerId: string; position: number; time: number }>
+        startedAtMillis: number | null
+      }
+    | undefined
 
-  // 개발 모드: 선택한 말 데이터
+  // 개발 모드에서 직접 넣어보는 말 데이터
   private selectedHorse?: {
     name: string
     stats: Stats
@@ -108,6 +258,55 @@ export default class RaceScene extends Phaser.Scene {
   private dataSync!: RaceDataSync
   private runtimeController!: RaceRuntimeController
   private flowUI!: RaceFlowUI
+  private finalResultBackfillRetryCount = 0
+  private lastStartedSetTransitionTargetSet: number | null = null
+
+  private hashStringToUint32(input: string): number {
+    let hash = 2166136261 >>> 0
+    for (let i = 0; i < input.length; i++) {
+      hash ^= input.charCodeAt(i)
+      hash = Math.imul(hash, 16777619)
+    }
+    return hash >>> 0
+  }
+
+  private createSeededRandom(seed: string): () => number {
+    let state = this.hashStringToUint32(seed)
+    if (state === 0) state = 0x9e3779b9
+    return () => {
+      state += 0x6d2b79f5
+      let t = state
+      t = Math.imul(t ^ (t >>> 15), t | 1)
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
+
+  private getDeterministicConditionRoll(playerKey: string, luck: number): number {
+    if (!this.roomId) return 0
+    const setIndex = this.room?.currentSet ?? this.currentSet
+    const seed = `condition|room:${this.roomId}|set:${setIndex}|player:${playerKey}`
+    const rng = this.createSeededRandom(seed)
+    const normalized = luck <= 20 ? luck / 20 : 1.0 + (luck - 20) / 40
+    let minBonus: number
+    let maxBonus: number
+    if (normalized <= 1.0) {
+      minBonus = -0.1 + normalized * 0.1
+      maxBonus = 0.1 + normalized * 0.1
+    } else if (normalized <= 1.5) {
+      const t = (normalized - 1.0) / 0.5
+      minBonus = 0.0 + t * 0.1
+      maxBonus = 0.2 + t * 0.3
+    } else {
+      minBonus = 0.1
+      maxBonus = 0.5
+    }
+    return minBonus + rng() * (maxBonus - minBonus)
+  }
+
+  private isServerAuthoritativeRaceMode(): boolean {
+    return !!(this.roomId && this.playerId && this.sessionToken && this.roomJoinToken)
+  }
 
   private readonly handleFinishSequenceSlowmo = (scale: number, restoreMs: number) => {
     this.simPlaybackScale = scale
@@ -170,8 +369,6 @@ export default class RaceScene extends Phaser.Scene {
     this.load.image('arrow', rightArrowUrl)
     // 하단 HUD 카드 배경
     this.load.image('hud_panel_bg', hudPanelBgUrl)
-    // 카운트다운 연출 사운드
-    this.load.audio('countdown', '/sounds/countdown.wav')
   }
 
   create() {
@@ -183,11 +380,27 @@ export default class RaceScene extends Phaser.Scene {
     this.createManagers()
     this.createHorsesAndHUD()
     this.setupAugmentSelection()
-    this.events.on('finish-sequence-slowmo', this.handleFinishSequenceSlowmo)
-    this.events.on('finish-sequence-slowmo-restore', this.handleFinishSequenceSlowmoRestore)
+    this.createAuthoritativeDebugOverlay()
+    this.registerSceneEventBridge()
     // create() 재호출/씬 재진입 시 리스너 누적을 막기 위해 shutdown/destroy에서 정리한다.
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleSceneShutdown, this)
     this.events.once(Phaser.Scenes.Events.DESTROY, this.handleSceneDestroy, this)
+  }
+
+  private registerSceneEventBridge() {
+    this.events.on(RACE_SCENE_EVENTS.FINISH_SEQUENCE_SLOWMO, this.handleFinishSequenceSlowmo)
+    this.events.on(
+      RACE_SCENE_EVENTS.FINISH_SEQUENCE_SLOWMO_RESTORE,
+      this.handleFinishSequenceSlowmoRestore,
+    )
+  }
+
+  private unregisterSceneEventBridge() {
+    this.events.off(RACE_SCENE_EVENTS.FINISH_SEQUENCE_SLOWMO, this.handleFinishSequenceSlowmo)
+    this.events.off(
+      RACE_SCENE_EVENTS.FINISH_SEQUENCE_SLOWMO_RESTORE,
+      this.handleFinishSequenceSlowmoRestore,
+    )
   }
 
   /** 게임 영역 = 전체 화면 (HUD는 하단 HUD 카드/아이콘만 오버레이) */
@@ -206,7 +419,7 @@ export default class RaceScene extends Phaser.Scene {
       gameWidth,
       gameHeight,
       preTiles: 3,
-      raceTiles: 30,
+      raceTiles: 100,
       postTiles: 5,
     })
 
@@ -269,17 +482,364 @@ export default class RaceScene extends Phaser.Scene {
 
   /** 게임 시작 전 증강 선택 표시 */
   private setupAugmentSelection() {
-    this.showAugmentSelection(generateRandomRarity())
+    void this.showAugmentSelection(generateRandomRarity())
   }
 
-  private handleStart() {
+  private commitRaceStartRuntime(): boolean {
     const wasStarted = this.isRaceStarted
     const nextState = this.runtimeController.startRace(this.getRuntimeState())
     this.applyRuntimeState(nextState)
 
-    if (!this.isRaceStarted || wasStarted) return
+    if (!this.isRaceStarted || wasStarted) return false
+
     this.horseManager.hidePlayerIndicator()
     this.horseManager.startAllHorses()
+    return true
+  }
+
+  private beginRaceStartBootstrap() {
+    if (this.isBootstrappingRaceStart) return
+
+    // "게임을 시작하는 중..." 단계:
+    // 서버 prepareRace + getRaceState polling으로 keyframe을 먼저 받아두고,
+    // startedAt이 내려오기 전에는 실제 재생은 하지 않는다.
+    this.isBootstrappingRaceStart = true
+    this.raceStartBootstrapBeganAtMs = performance.now()
+    this.raceStartBootstrapMinReadyAtMs =
+      this.raceStartBootstrapBeganAtMs + RACE_START_BOOTSTRAP_MIN_DURATION_MS
+    this.hasReceivedInitialAuthoritativeFrame = false
+    this.hasReceivedAnyAuthoritativePollResponse = false
+
+    this.horseManager.hidePlayerIndicator()
+    this.waitingOverlayHandle?.close(false)
+    this.waitingOverlayHandle = this.flowUI.showWaiting(this, {
+      messageKey: 'game.startingRace',
+      durationMs: null,
+      onComplete: () => {
+        // manual close only
+      },
+    })
+
+    this.raceStartBootstrapTimeoutEvent?.remove(false)
+    this.raceStartBootstrapTimeoutEvent = this.time.delayedCall(
+      RACE_START_BOOTSTRAP_MAX_WAIT_MS,
+      () => {
+        if (!this.isBootstrappingRaceStart) return
+        console.warn(
+          '[RaceScene] race start bootstrap timeout',
+          buildRaceStartBootstrapDebugPayload({
+            roomId: this.roomId,
+            setIndex: this.currentSet,
+            elapsedMs: this.authoritativeElapsedMs,
+            hasKeyframe: !!this.authoritativeKeyframe,
+            hasNextKeyframe: !!this.authoritativeNextKeyframe,
+            hasAnyPollResponse: this.hasReceivedAnyAuthoritativePollResponse,
+            reason: 'timeout',
+          }),
+        )
+        this.releaseRaceStartBootstrap({ reason: 'timeout' })
+      },
+    )
+
+    // bootstrap 단계에서는 prepare만 요청하고 startRace는 아직 호출하지 않는다.
+    void this.beginServerAuthoritativeRace({ requestStart: false })
+  }
+
+  private releaseRaceStartBootstrap(params: {
+    reason: 'first-frame' | 'timeout' | 'already-ready'
+  }) {
+    if (!this.isBootstrappingRaceStart) return
+
+    this.isBootstrappingRaceStart = false
+    this.raceStartBootstrapBeganAtMs = null
+    this.raceStartBootstrapMinReadyAtMs = 0
+    this.raceStartBootstrapTimeoutEvent?.remove(false)
+    this.raceStartBootstrapTimeoutEvent = undefined
+    this.waitingOverlayHandle?.close(false)
+    this.waitingOverlayHandle = undefined
+
+    if (import.meta.env.DEV) {
+      console.info(
+        '[RaceScene] race start bootstrap released',
+        buildRaceStartBootstrapDebugPayload({
+          roomId: this.roomId,
+          setIndex: this.currentSet,
+          elapsedMs: this.authoritativeElapsedMs,
+          hasKeyframe: !!this.authoritativeKeyframe,
+          hasNextKeyframe: !!this.authoritativeNextKeyframe,
+          hasAnyPollResponse: this.hasReceivedAnyAuthoritativePollResponse,
+          reason: params.reason,
+        }),
+      )
+    }
+
+    this.raceStartBootstrapReadyForCountdown = true
+    // bootstrap이 끝나면 그 다음에만 3,2,1,GO 카운트다운을 시작한다.
+    this.startCountdown()
+  }
+
+  private tryReleaseRaceStartBootstrapIfReady(reason: 'first-frame' | 'already-ready') {
+    if (!this.isBootstrappingRaceStart) return
+    if (
+      !shouldReleaseRaceStartOverlay({
+        hasReceivedInitialAuthoritativeFrame: this.hasReceivedInitialAuthoritativeFrame,
+        nowMs: performance.now(),
+        minReadyAtMs: this.raceStartBootstrapMinReadyAtMs,
+      })
+    ) {
+      return
+    }
+
+    this.releaseRaceStartBootstrap({ reason })
+  }
+
+  private markInitialAuthoritativeFrameReceived(params: {
+    setIndex: number
+    elapsedMs?: number
+    hasKeyframe: boolean
+    hasNextKeyframe: boolean
+  }) {
+    if (this.hasReceivedInitialAuthoritativeFrame) return
+    this.hasReceivedInitialAuthoritativeFrame = true
+
+    if (import.meta.env.DEV) {
+      console.info(
+        '[RaceScene] initial authoritative race frame received',
+        buildRaceStartBootstrapDebugPayload({
+          roomId: this.roomId,
+          setIndex: params.setIndex,
+          elapsedMs: params.elapsedMs,
+          hasKeyframe: params.hasKeyframe,
+          hasNextKeyframe: params.hasNextKeyframe,
+          hasAnyPollResponse: this.hasReceivedAnyAuthoritativePollResponse,
+          reason: 'first-frame',
+        }),
+      )
+    }
+  }
+
+  private handleStart() {
+    if (this.roomId && this.playerId && this.sessionToken && this.roomJoinToken && this.room) {
+      if (!this.raceStartBootstrapReadyForCountdown) {
+        this.beginRaceStartBootstrap()
+        return
+      }
+      this.raceStartBootstrapReadyForCountdown = false
+      // 서버 startRace는 실제 출발 타이밍(GO 직후)에 맞춰서 호출한다.
+      void this.beginServerAuthoritativeRace({ requestStart: true })
+      this.commitRaceStartRuntime()
+      return
+    }
+
+    this.commitRaceStartRuntime()
+  }
+
+  private async beginServerAuthoritativeRace(options?: { requestStart?: boolean }) {
+    if (!this.roomId || !this.playerId || !this.sessionToken || !this.roomJoinToken || !this.room) {
+      return
+    }
+    const shouldRequestStart = options?.requestStart === true
+
+    const setIndex = this.currentSet
+
+    if (
+      shouldMarkInitialAuthoritativeFrameReceived({
+        hasRaceState: !!this.authoritativeKeyframe || !!this.authoritativeNextKeyframe,
+        elapsedMs: this.authoritativeElapsedMs,
+        keyframe: this.authoritativeKeyframe,
+        nextKeyframe: this.authoritativeNextKeyframe,
+      })
+    ) {
+      this.markInitialAuthoritativeFrameReceived({
+        setIndex,
+        elapsedMs: this.authoritativeElapsedMs,
+        hasKeyframe: !!this.authoritativeKeyframe,
+        hasNextKeyframe: !!this.authoritativeNextKeyframe,
+      })
+      this.tryReleaseRaceStartBootstrapIfReady('already-ready')
+    }
+
+    // prepare/start 어느 단계든 polling은 계속 유지해서 prepared/running 상태 변화를 받는다.
+    this.startServerRaceStatePolling(setIndex)
+
+    try {
+      if (
+        !shouldRequestStart &&
+        !this.isServerRacePrepared &&
+        this.isCurrentPlayerHost() &&
+        this.room.status === 'racing'
+      ) {
+        this.isServerRacePrepared = true
+        // host만 prepareRace를 호출해서 서버 스크립트를 먼저 만든다.
+        await prepareRace({
+          roomId: this.roomId,
+          playerId: this.playerId,
+          sessionToken: this.sessionToken,
+          joinToken: this.roomJoinToken,
+          setIndex,
+        })
+      }
+      if (
+        shouldRequestStart &&
+        !this.isServerRaceRequested &&
+        this.isCurrentPlayerHost() &&
+        this.room.status === 'racing'
+      ) {
+        this.isServerRaceRequested = true
+        // 실제 출발 타이밍에 host가 startRace를 호출해서 startedAt을 확정한다.
+        await startRace({
+          roomId: this.roomId,
+          playerId: this.playerId,
+          sessionToken: this.sessionToken,
+          joinToken: this.roomJoinToken,
+          setIndex,
+        })
+      }
+    } catch (error) {
+      if (!shouldRequestStart) {
+        this.isServerRacePrepared = false
+      } else {
+        this.isServerRaceRequested = false
+      }
+      console.warn('[RaceScene] Failed to bootstrap server-authoritative race:', error)
+    }
+  }
+
+  private startServerRaceStatePolling(setIndex: number) {
+    if (this.serverRacePollEvent) {
+      this.serverRacePollEvent.remove(false)
+      this.serverRacePollEvent = undefined
+    }
+
+    const poll = async () => {
+      if (
+        !this.roomId ||
+        !this.playerId ||
+        !this.sessionToken ||
+        !this.roomJoinToken ||
+        this.isPollingServerRaceResult
+      ) {
+        return
+      }
+
+      this.isPollingServerRaceResult = true
+      try {
+        const response = await getRaceState({
+          roomId: this.roomId,
+          playerId: this.playerId,
+          sessionToken: this.sessionToken,
+          joinToken: this.roomJoinToken,
+          setIndex,
+        })
+
+        this.hasReceivedAnyAuthoritativePollResponse = true
+        if (!response.data.hasRaceState) {
+          return
+        }
+        this.authoritativeRaceStateStatus =
+          response.data.status ?? this.authoritativeRaceStateStatus
+        if (
+          response.data.status === 'prepared' &&
+          this.isRaceStarted &&
+          this.isCurrentPlayerHost() &&
+          !this.isServerRaceRequested
+        ) {
+          void this.beginServerAuthoritativeRace({ requestStart: true })
+        }
+
+        this.authoritativeElapsedMs = response.data.elapsedMs ?? this.authoritativeElapsedMs
+        this.authoritativeNowMs = response.data.authoritativeNowMs ?? Date.now()
+        this.lastAuthoritativePollClientTimeMs = performance.now()
+        this.authoritativeKeyframe = response.data.keyframe ?? this.authoritativeKeyframe
+        this.authoritativeNextKeyframe =
+          response.data.nextKeyframe ?? this.authoritativeNextKeyframe
+        this.pushAuthoritativeFrame(this.authoritativeKeyframe)
+        this.pushAuthoritativeFrame(this.authoritativeNextKeyframe)
+        this.authoritativeEventsWindow = (response.data.eventsWindow ?? []).map((event) => ({
+          id: event.id,
+          type: event.type,
+          elapsedMs: event.elapsedMs,
+          rank: 'rank' in event ? event.rank : undefined,
+          playerId: 'playerId' in event ? event.playerId : undefined,
+        }))
+
+        if (response.data.rankings && response.data.rankings.length > 0) {
+          const nextStartedAtMillis =
+            response.data.startedAtMillis === undefined
+              ? (this.authoritativeRacePlan?.startedAtMillis ?? null)
+              : response.data.startedAtMillis
+          this.authoritativeRacePlan = {
+            rankings: response.data.rankings.map((entry) => ({
+              playerId: entry.playerId,
+              position: entry.position,
+              time: entry.time,
+            })),
+            startedAtMillis: nextStartedAtMillis,
+          }
+        }
+
+        if (shouldMarkInitialAuthoritativeFrameReceived(response.data)) {
+          this.markInitialAuthoritativeFrameReceived({
+            setIndex,
+            elapsedMs: response.data.elapsedMs,
+            hasKeyframe: !!response.data.keyframe,
+            hasNextKeyframe: !!response.data.nextKeyframe,
+          })
+        }
+        this.tryReleaseRaceStartBootstrapIfReady('first-frame')
+      } catch (error) {
+        console.warn('[RaceScene] getRaceState polling failed:', error)
+      } finally {
+        this.isPollingServerRaceResult = false
+      }
+    }
+
+    void poll()
+    this.serverRacePollEvent = this.time.addEvent({
+      delay: AUTHORITATIVE_POLL_INTERVAL_MS,
+      loop: true,
+      callback: () => {
+        void poll()
+      },
+    })
+  }
+
+  private pushAuthoritativeFrame(frame: AuthoritativeRaceFrame | undefined) {
+    if (!frame) return
+    const next = this.authoritativeFrameBuffer.filter(
+      (entry) => entry.elapsedMs !== frame.elapsedMs,
+    )
+    next.push(frame)
+    next.sort((a, b) => a.elapsedMs - b.elapsedMs)
+    this.authoritativeFrameBuffer = next.slice(-64)
+  }
+
+  private resolveFramePairForElapsed(renderElapsedMs: number): {
+    current: AuthoritativeRaceFrame
+    next: AuthoritativeRaceFrame
+  } | null {
+    const frames = this.authoritativeFrameBuffer
+    if (!frames.length) return null
+
+    let current = frames[0]
+    let next = frames[frames.length - 1]
+
+    for (let i = 0; i < frames.length; i++) {
+      const frame = frames[i]
+      if (frame.elapsedMs <= renderElapsedMs) {
+        current = frame
+      }
+      if (frame.elapsedMs >= renderElapsedMs) {
+        next = frame
+        break
+      }
+    }
+
+    if (next.elapsedMs < current.elapsedMs) {
+      next = current
+    }
+
+    return { current, next }
   }
 
   /**
@@ -290,8 +850,8 @@ export default class RaceScene extends Phaser.Scene {
     // 세트 수 설정
     this.currentSet = this.room?.currentSet || 1
 
-    // 리롤 횟수 설정
-    this.remainingRerolls = this.room?.rerollLimit || 3
+    // 현재 플레이어 리롤 횟수 설정
+    this.remainingRerolls = this.getRemainingRerollsForCurrentPlayer()
 
     // 플레이어 말 인덱스 찾기 (playerId 기준)
     if (this.players && this.playerId) {
@@ -303,13 +863,14 @@ export default class RaceScene extends Phaser.Scene {
   }
 
   private startCountdown() {
-    if (this.isCountdownActive) return
-    this.isCountdownActive = true
     // 카운트다운 직전에 내 말 인디케이터(우상단 화살표) 표시 보장
     this.horseManager.showPlayerIndicator()
-    if (this.cache.audio.exists('countdown')) {
-      this.sound.play('countdown', { volume: 0.8 })
+    if (this.isCountdownActive) return
+    if (this.isServerAuthoritativeRaceMode() && !this.raceStartBootstrapReadyForCountdown) {
+      this.beginRaceStartBootstrap()
+      return
     }
+    this.isCountdownActive = true
     this.countdownManager.start(() => {
       this.isCountdownActive = false
       this.handleStart()
@@ -319,7 +880,158 @@ export default class RaceScene extends Phaser.Scene {
   /** 증강 선택 반투명 오버레이 뎁스 (하단 HUD 카드 CARD_DEPTH+0.5 보다 아래) */
   private static readonly AUGMENT_DIM_DEPTH = 30
 
-  private showAugmentSelection(rarity: AugmentRarity) {
+  private prepareAllHorsesForRaceWithCurrentPlayers() {
+    this.horseManager.prepareAllHorsesForRace(
+      () => this.mapManager.getTrackLengthM(),
+      () => this.mapManager.getFinishLineOffsetM(),
+      (index, horse) => {
+        const key = this.players?.[index]?.id ?? horse.name ?? String(index)
+        return this.getDeterministicConditionRoll(key, horse.baseStats.Luck)
+      },
+    )
+  }
+
+  private resumeRaceAfterAugmentSelectionWait() {
+    this.isWaitingForOtherAugmentSelections = false
+    this.closeWaitingOverlay()
+    this.hud.setHudCardFace(false)
+    this.flowUI.showGUIAfterWaitingOverlay({
+      hud: this.hud,
+      horseManager: this.horseManager,
+    })
+    this.prepareAllHorsesForRaceWithCurrentPlayers()
+    this.updateHUDInitial()
+    this.startCountdown()
+  }
+
+  private startWaitingForOtherAugmentSelections() {
+    this.removeAugmentDimOverlay()
+    this.augmentSelectionActive = false
+    this.isWaitingForOtherAugmentSelections = true
+    this.hud.setAugmentSelectionHUD('full')
+    this.hud.setAugmentPreview(null)
+    this.flowUI.hideGUIForWaitingOverlay({
+      hud: this.hud,
+      progressBarManager: this.progressBarManager,
+      horseManager: this.horseManager,
+    })
+    this.waitingOverlayHandle = this.flowUI.showWaiting(this, {
+      messageKey: 'game.waitingAfterAugment',
+      durationMs: null,
+      onComplete: () => {
+        // manual close only
+      },
+    })
+
+    if (this.room?.status === 'racing') {
+      this.resumeRaceAfterAugmentSelectionWait()
+    }
+  }
+
+  private async fetchSynchronizedAugmentSelection(setIndex: number): Promise<{
+    rarity: AugmentRarity
+    availableAugments: Augment[]
+  } | null> {
+    if (!this.roomId || !this.playerId || !this.sessionToken || !this.roomJoinToken) {
+      return null
+    }
+
+    let response: Awaited<ReturnType<typeof getAugmentSelection>> | null = null
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        response = await getAugmentSelection({
+          roomId: this.roomId,
+          playerId: this.playerId,
+          sessionToken: this.sessionToken,
+          joinToken: this.roomJoinToken,
+          setIndex,
+        })
+        break
+      } catch (error) {
+        if (attempt === 9) {
+          console.error('[RaceScene] Failed to fetch synchronized augment selection:', error)
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 200))
+        }
+      }
+    }
+
+    if (!response) return null
+
+    return {
+      rarity: response.data.rarity,
+      availableAugments: response.data.availableAugments as Augment[],
+    }
+  }
+
+  private async handleAugmentRerollRequest(): Promise<Augment[] | null> {
+    if (!this.roomId || !this.playerId || !this.sessionToken || !this.roomJoinToken) {
+      return null
+    }
+
+    const response = await rerollAugments({
+      roomId: this.roomId,
+      playerId: this.playerId,
+      sessionToken: this.sessionToken,
+      joinToken: this.roomJoinToken,
+      setIndex: this.currentSet,
+    })
+    this.remainingRerolls = response.data.remainingRerolls
+    return response.data.newAugments as Augment[]
+  }
+
+  private handleAugmentSelectionCancel() {
+    this.removeAugmentDimOverlay()
+    this.augmentSelectionActive = false
+    this.hud.setAugmentSelectionHUD('full')
+    this.hud.setHudCardFace(false) // 레이스로 돌아가면 하단 GUI 기본 = 속도/체력 등
+    this.prepareAllHorsesForRaceWithCurrentPlayers()
+    this.updateHUDInitial()
+    this.horseManager.showPlayerIndicator()
+    this.startCountdown()
+  }
+
+  private handleAugmentPreviewUpdate(augment: Augment | null) {
+    this.hud.setAugmentPreview(augment)
+    this.updateHUDInitial()
+  }
+
+  private ensureAugmentSelectionSceneRegistered() {
+    const scenePlugin = this.scene
+    if (!scenePlugin.get('AugmentSelectionScene')) {
+      scenePlugin.add('AugmentSelectionScene', AugmentSelectionScene as typeof Phaser.Scene, false)
+    }
+  }
+
+  private stopExistingAugmentSelectionSceneIfActive() {
+    const scenePlugin = this.scene
+    if (scenePlugin.isActive('AugmentSelectionScene')) {
+      scenePlugin.stop('AugmentSelectionScene')
+    }
+  }
+
+  private launchAugmentSelectionScene(params: {
+    rarity: AugmentRarity
+    augmentChoices?: Augment[]
+    totalRerollLimit: number
+  }) {
+    this.ensureAugmentSelectionSceneRegistered()
+    this.scene.launch('AugmentSelectionScene', {
+      rarity: params.rarity,
+      augmentChoices: params.augmentChoices,
+      maxRerolls: params.totalRerollLimit,
+      remainingRerolls: this.getRemainingRerollsForCurrentPlayer(),
+      showTapToStart: false,
+      onSelect: (augment: Augment, usedRerolls: number) =>
+        this.onAugmentSelected(augment, usedRerolls),
+      onReroll: async () => this.handleAugmentRerollRequest(),
+      onCancel: () => this.handleAugmentSelectionCancel(),
+      onPreview: (augment: Augment | null) => this.handleAugmentPreviewUpdate(augment),
+      onCardsShown: () => this.hud.setAugmentSelectionHUD('bottomOnly'),
+    })
+  }
+
+  private async showAugmentSelection(fallbackRarity: AugmentRarity) {
     this.augmentSelectionActive = true
     this.horseManager.hidePlayerIndicator()
     this.hud.setAugmentSelectionHUD('hidden')
@@ -334,43 +1046,32 @@ export default class RaceScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setInteractive()
 
-    const scenePlugin = this.scene
-    if (scenePlugin.isActive('AugmentSelectionScene')) {
-      scenePlugin.stop('AugmentSelectionScene')
+    this.stopExistingAugmentSelectionSceneIfActive()
+
+    let resolvedRarity = fallbackRarity
+    let resolvedAugments: Augment[] | undefined
+    const setIndex = this.currentSet
+
+    if (this.roomId && this.playerId && this.sessionToken && this.roomJoinToken) {
+      const response = await this.fetchSynchronizedAugmentSelection(setIndex)
+      if (!response) {
+        // 서버 권한 모드에서는 로컬 fallback으로 진행하지 않고
+        // 다시 RaceScene으로 복귀시켜 상태 오염을 방지한다.
+        this.removeAugmentDimOverlay()
+        this.scene.stop('AugmentSelectionScene')
+        return
+      }
+
+      resolvedRarity = response.rarity
+      resolvedAugments = response.availableAugments
     }
 
     const totalRerollLimit = this.room?.rerollLimit ?? 3
-    const sceneData = {
-      rarity,
-      maxRerolls: totalRerollLimit,
-      remainingRerolls: this.remainingRerolls,
-      showTapToStart: this.currentSet === 1,
-      onSelect: (augment: Augment, usedRerolls: number) =>
-        this.onAugmentSelected(augment, usedRerolls),
-      onCancel: () => {
-        this.removeAugmentDimOverlay()
-        this.augmentSelectionActive = false
-        this.hud.setAugmentSelectionHUD('full')
-        this.hud.setHudCardFace(false) // 레이스로 돌아가면 하단 GUI 기본 = 속도/체력 등
-        this.horseManager.prepareAllHorsesForRace(
-          () => this.mapManager.getTrackLengthM(),
-          () => this.mapManager.getFinishLineOffsetM(),
-        )
-        this.updateHUDInitial()
-        this.horseManager.showPlayerIndicator()
-        this.startCountdown()
-      },
-      onPreview: (augment: Augment | null) => {
-        this.hud.setAugmentPreview(augment)
-        this.updateHUDInitial()
-      },
-      onCardsShown: () => this.hud.setAugmentSelectionHUD('bottomOnly'),
-    }
-
-    if (!scenePlugin.get('AugmentSelectionScene')) {
-      scenePlugin.add('AugmentSelectionScene', AugmentSelectionScene as typeof Phaser.Scene, false)
-    }
-    scenePlugin.launch('AugmentSelectionScene', sceneData)
+    this.launchAugmentSelectionScene({
+      rarity: resolvedRarity,
+      augmentChoices: resolvedAugments,
+      totalRerollLimit,
+    })
   }
 
   private removeAugmentDimOverlay() {
@@ -379,6 +1080,28 @@ export default class RaceScene extends Phaser.Scene {
   }
 
   private onAugmentSelected(augment: Augment, usedRerolls: number) {
+    if (this.roomId && this.playerId && this.sessionToken && this.roomJoinToken) {
+      void selectAugment({
+        roomId: this.roomId,
+        playerId: this.playerId,
+        sessionToken: this.sessionToken,
+        joinToken: this.roomJoinToken,
+        setIndex: this.currentSet,
+        augmentId: augment.id,
+      })
+        .then(() => {
+          this.startWaitingForOtherAugmentSelections()
+        })
+        .catch((error) => {
+          console.error('[RaceScene] selectAugment failed:', error)
+        })
+      return
+    }
+
+    this.onAugmentSelectedLocal(augment, usedRerolls)
+  }
+
+  private onAugmentSelectedLocal(augment: Augment, usedRerolls: number) {
     this.selectedAugments.push(augment)
     this.augmentSelectionActive = false
     this.remainingRerolls -= usedRerolls
@@ -400,62 +1123,86 @@ export default class RaceScene extends Phaser.Scene {
 
     this.updateHUDInitial()
 
-    // 증강 씬이 사라진 뒤(다음 프레임) 대기 연출 → 말 대기, 카운트다운 (연출과 연출 사이)
-    // 주의: 여기서 show 하면 다음 틱에 hideGUIForWaitingOverlay가 인디케이터를 숨기므로 호출하지 않음.
+    // 증강 씬이 닫힌 다음 프레임에 대기 연출을 시작해서 연출이 바로 겹치지 않게 한다.
+    // 여기서 show를 바로 호출하면 다음 틱 hideGUIForWaitingOverlay에서 인디케이터가 다시 숨겨진다.
     this.time.delayedCall(0, () => {
-      // 다른 플레이어 기다리는 연출 시작 시 HUD 미리보기 해제 (대기 중에는 노란색 미리보기 비표시)
-      this.hud.setAugmentPreview(null)
-      this.flowUI.hideGUIForWaitingOverlay({
-        hud: this.hud,
-        progressBarManager: this.progressBarManager,
-        horseManager: this.horseManager,
-      })
-      this.flowUI.showWaiting(this, {
-        messageKey: 'game.waitingAfterAugment',
-        onComplete: () => {
-          this.hud.setHudCardFace(false) // 레이스 시작 시 하단 GUI 기본 = 속도/체력 등
-          this.flowUI.showGUIAfterWaitingOverlay({
-            hud: this.hud,
-            horseManager: this.horseManager,
-          })
-          this.startCountdown()
-        },
-        durationMs: RaceScene.WAITING_DURATION_MS,
-      })
+      this.startLocalAugmentSelectionWaitFlow()
     })
+  }
+
+  private startLocalAugmentSelectionWaitFlow() {
+    this.hud.setAugmentPreview(null)
+    this.flowUI.hideGUIForWaitingOverlay({
+      hud: this.hud,
+      progressBarManager: this.progressBarManager,
+      horseManager: this.horseManager,
+    })
+    this.flowUI.showWaiting(this, {
+      messageKey: 'game.waitingAfterAugment',
+      onComplete: () => this.handleLocalAugmentSelectionWaitComplete(),
+      durationMs: RaceScene.WAITING_DURATION_MS,
+    })
+  }
+
+  private handleLocalAugmentSelectionWaitComplete() {
+    this.hud.setHudCardFace(false) // 레이스 시작 시 하단 GUI 기본 = 속도/체력 등
+    this.flowUI.showGUIAfterWaitingOverlay({
+      hud: this.hud,
+      horseManager: this.horseManager,
+    })
+    this.startCountdown()
   }
 
   update(_time: number, delta: number) {
     if (!this.mapManager) return
 
     if (this.isRaceStarted) {
-      const allFinished = this.updateSimulation(delta)
+      const allFinished = this.isServerAuthoritativeRaceMode()
+        ? this.updateAuthoritativeSimulation(delta)
+        : this.updateSimulation(delta)
 
-      // 말이 출발했는지 확인하고 진행바 표시
+      // 말이 실제로 움직이기 시작하면 진행바를 보여준다.
       const simHorses = this.horseManager.getSimHorses()
       const anyHorseStarted = simHorses.some((horse) => horse.position > 0)
       if (anyHorseStarted) {
         this.progressBarManager.show()
       }
 
-      // 트랙 길이·결승 직전 N미터. 연출은 선두 말 기준으로 트리거(플레이어 기준이면 1등이 이미 결승해 슬로모가 바로 끝나는 문제 방지)
-      const trackLengthM = this.mapManager.getTrackLengthM()
-      const finishTriggerM = Math.max(0, trackLengthM - 15)
+      const isAuthoritativeMode = this.isServerAuthoritativeRaceMode()
+      // 로컬 모드에서는 결승선 15m 전부터 FINISH 연출을 먼저 시작한다.
+      // 권위 모드에서는 slowmoTrigger를 쓰지 않고 1등 완주/화면 통과 기준으로 시작한다.
       const leadingHorse = simHorses.reduce((a, b) => (a.position >= b.position ? a : b))
-      const leadingPosition = leadingHorse?.position ?? 0
-      if (
-        leadingPosition >= finishTriggerM &&
-        !leadingHorse?.finished &&
-        !this.isFinishSequenceTriggered
-      ) {
-        const leadingIndex = simHorses.indexOf(leadingHorse)
-        this.triggerFinishSequence(leadingIndex >= 0 ? leadingIndex : this.playerHorseIndex)
+      if (!isAuthoritativeMode) {
+        const trackLengthM = this.mapManager.getTrackLengthM()
+        const finishTriggerM = Math.max(0, trackLengthM - 15)
+        const leadingPosition = leadingHorse?.position ?? 0
+        if (
+          leadingPosition >= finishTriggerM &&
+          !leadingHorse?.finished &&
+          !this.isFinishSequenceTriggered
+        ) {
+          const leadingIndex = simHorses.indexOf(leadingHorse)
+          this.triggerFinishSequence(leadingIndex >= 0 ? leadingIndex : this.playerHorseIndex)
+        }
+      }
+      if (isAuthoritativeMode) {
+        this.tryStartAuthoritativeFinishCelebrationByVisualCrossing(simHorses)
       }
 
-      // 슬로모 시작한 프레임이 아니고, 1등이 결승선 통과했을 때만 슬로모 복귀 시작
-      if (leadingHorse?.finished && this.simSlowmoActive && !this.simSlowmoStartedThisFrame) {
+      // 슬로모 복귀 조건
+      // - 권위 모드: 서버 finish(rank=1) 이벤트를 받고, 화면 시간도 우승 말 완주 시점까지 왔을 때
+      // - 로컬 모드: 선두 말이 finished가 되었을 때
+      const authoritativeWinnerFinishMs = this.getAuthoritativeWinnerFinishMs()
+      const authoritativeRenderReachedWinnerFinish =
+        typeof authoritativeWinnerFinishMs === 'number' &&
+        this.lastRenderedElapsedMs >= authoritativeWinnerFinishMs - 1
+      const shouldRestoreSlowmo = isAuthoritativeMode
+        ? this.authoritativeWinnerFinishedEventSeen && authoritativeRenderReachedWinnerFinish
+        : !!leadingHorse?.finished
+      if (shouldRestoreSlowmo && this.simSlowmoActive && !this.simSlowmoStartedThisFrame) {
         this.simSlowmoActive = false
-        this.events.emit('finish-sequence-horse-crossed')
+        this.authoritativeWinnerFinishedEventSeen = false
+        this.events.emit(RACE_SCENE_EVENTS.FINISH_SEQUENCE_HORSE_CROSSED)
         this.tweens.add({
           targets: this,
           simPlaybackScale: 1,
@@ -463,30 +1210,9 @@ export default class RaceScene extends Phaser.Scene {
           ease: 'Sine.Out',
           onComplete: () => {
             this.simPlaybackScale = 1
-            this.events.emit('finish-sequence-slowmo-restore')
+            this.events.emit(RACE_SCENE_EVENTS.FINISH_SEQUENCE_SLOWMO_RESTORE)
           },
         })
-      }
-
-      if (allFinished && !this.isRaceFinished) {
-        this.isRaceFinished = true
-        const showGatheringOverlay = () => {
-          this.flowUI.hideGUIForWaitingOverlay({
-            hud: this.hud,
-            progressBarManager: this.progressBarManager,
-            horseManager: this.horseManager,
-          })
-          this.flowUI.showWaiting(this, {
-            messageKey: 'game.gatheringResults',
-            onComplete: () => this.showRaceResult(),
-            durationMs: RaceScene.WAITING_DURATION_MS,
-          })
-        }
-        if (this.finishSequenceDone || !this.isFinishSequenceTriggered) {
-          showGatheringOverlay()
-        } else {
-          this.events.once('finish-sequence-done', showGatheringOverlay)
-        }
       }
 
       this.cameraScrollManager.update(simHorses, this.isRaceFinished)
@@ -494,9 +1220,29 @@ export default class RaceScene extends Phaser.Scene {
       this.updateHUD()
       this.mapManager.updateStripePositions(this.cameraScrollManager.getCameraScrollPx())
       this.progressBarManager.update(simHorses)
+      this.renderAuthoritativeDebugOverlay()
+
+      if (
+        !this.isRaceFinished &&
+        this.shouldCommitRaceFinish({ allFinished, isAuthoritativeMode })
+      ) {
+        this.isRaceFinished = true
+        const showGatheringOverlay = () => this.startResultAggregationOverlay()
+        if (this.finishSequenceDone || !this.isFinishSequenceTriggered) {
+          showGatheringOverlay()
+        } else {
+          this.events.once(RACE_SCENE_EVENTS.FINISH_SEQUENCE_DONE, showGatheringOverlay)
+        }
+      }
 
       this.simSlowmoStartedThisFrame = false
     }
+  }
+
+  private getAuthoritativeWinnerFinishMs(): number | null {
+    const winner = this.authoritativeRacePlan?.rankings.find((entry) => entry.position === 1)
+    if (!winner || typeof winner.time !== 'number') return null
+    return winner.time * 1000
   }
 
   private updateSimulation(deltaMs: number): boolean {
@@ -516,7 +1262,272 @@ export default class RaceScene extends Phaser.Scene {
     return result.allFinished
   }
 
-  // 말 위치 업데이트
+  private computeAuthoritativeRenderElapsedMs(deltaMs: number): number {
+    const startedAtMs = this.authoritativeRacePlan?.startedAtMillis ?? Date.now()
+    const result = computeAuthoritativeRenderElapsedMsHelper({
+      deltaMs,
+      clientNowMs: performance.now(),
+      startedAtMs,
+      authoritativeNowMs: this.authoritativeNowMs,
+      authoritativeElapsedMs: this.authoritativeElapsedMs,
+      lastAuthoritativePollClientTimeMs: this.lastAuthoritativePollClientTimeMs,
+      smoothedElapsedMs: this.smoothedElapsedMs,
+      lastRenderedElapsedMs: this.lastRenderedElapsedMs,
+      simPlaybackScale: this.simPlaybackScale,
+      simSlowmoActive: this.simSlowmoActive,
+      renderDelayMs: AUTHORITATIVE_RENDER_DELAY_MS,
+      timeHardSnapMs: AUTHORITATIVE_TIME_HARD_SNAP_MS,
+      timeSoftCorrectionAlpha: AUTHORITATIVE_TIME_SOFT_CORRECTION_ALPHA,
+      driftCorrectionNormal: AUTHORITATIVE_DRIFT_CORRECTION_NORMAL,
+      driftCorrectionSlowmo: AUTHORITATIVE_DRIFT_CORRECTION_SLOWMO,
+    })
+    this.smoothedElapsedMs = result.smoothedElapsedMs
+    this.lastRenderedElapsedMs = result.lastRenderedElapsedMs
+    this.simElapsedSec = result.simElapsedSec
+    this.authoritativeMetrics.timeHardSnapCount += result.timeHardSnapCountDelta
+    return result.renderElapsedMs
+  }
+
+  private consumeAuthoritativeRaceEvents(renderElapsedMs: number) {
+    this.authoritativeEventsWindow.forEach((event) => {
+      if (this.consumedRaceEventIds.has(event.id)) return
+      if (event.elapsedMs > renderElapsedMs + AUTHORITATIVE_EVENT_CONSUME_TOLERANCE_MS) return
+      this.consumedRaceEventIds.add(event.id)
+      if (event.type === 'slowmoTrigger') {
+        // 지금은 슬로모를 꺼둔 상태라서 slowmoTrigger 이벤트는 축하 연출 시작에 쓰지 않는다.
+        return
+      }
+      if (event.type === 'finish') {
+        if (event.playerId) {
+          this.authoritativeFinishedPlayerIds.add(event.playerId)
+        }
+        if (event.rank === 1) {
+          this.authoritativeWinnerFinishedEventSeen = true
+          if (!this.isFinishSequenceTriggered) {
+            this.triggerFinishSequence(this.getWinnerHorseIndex() ?? undefined)
+          }
+        }
+      }
+    })
+  }
+
+  private getWinnerHorseIndex(): number | null {
+    const winnerPlayerId = this.authoritativeRacePlan?.rankings.find(
+      (entry) => entry.position === 1,
+    )?.playerId
+    if (!winnerPlayerId || !this.players) return null
+    const index = this.players.findIndex((player) => player.id === winnerPlayerId)
+    return index >= 0 ? index : null
+  }
+
+  private tryStartAuthoritativeFinishCelebrationByVisualCrossing(
+    simHorses: ReturnType<HorseManager['getSimHorses']>,
+  ) {
+    if (this.isFinishSequenceTriggered) return
+    const winnerIndex = this.getWinnerHorseIndex()
+    if (winnerIndex == null) return
+    const winnerHorse = simHorses[winnerIndex]
+    if (!winnerHorse) return
+    const finishTriggerM = this.mapManager.getTrackLengthM() - 0.06
+    if (winnerHorse.position < finishTriggerM) return
+    this.triggerFinishSequence(winnerIndex)
+  }
+
+  private applyAuthoritativeFrameToHorses(params: {
+    simHorses: ReturnType<HorseManager['getSimHorses']>
+    currentFrame: AuthoritativeRaceFrame
+    nextFrame: AuthoritativeRaceFrame
+    renderElapsedMs: number
+    interpolationT: number
+    frameSpanSec: number
+  }): boolean {
+    const {
+      simHorses,
+      currentFrame,
+      nextFrame,
+      renderElapsedMs,
+      interpolationT: t,
+      frameSpanSec,
+    } = params
+    let allFinished = true
+
+    const t2 = t * t
+    const t3 = t2 * t
+    const h00 = 2 * t3 - 3 * t2 + 1
+    const h10 = t3 - 2 * t2 + t
+    const h01 = -2 * t3 + 3 * t2
+    const h11 = t3 - t2
+    const trackLengthM = this.mapManager.getTrackLengthM()
+    const finishZoneStartM = Math.max(0, trackLengthM - AUTHORITATIVE_FINISH_ZONE_M)
+
+    simHorses.forEach((horse, index) => {
+      const playerId =
+        this.players?.[index]?.id ?? this.authoritativeRacePlan?.rankings[index]?.playerId
+      if (!playerId) {
+        allFinished = false
+        return
+      }
+      const fromPos = currentFrame.positions[playerId]
+      const toPos = nextFrame.positions[playerId]
+      const fromSpeed = currentFrame.speeds[playerId]
+      const toSpeed = nextFrame.speeds[playerId]
+      const fromStamina = currentFrame.stamina[playerId]
+      const toStamina = nextFrame.stamina[playerId]
+      const fromFinished = currentFrame.finished[playerId]
+      const toFinished = nextFrame.finished[playerId]
+      if (
+        typeof fromPos !== 'number' ||
+        typeof toPos !== 'number' ||
+        typeof fromSpeed !== 'number' ||
+        typeof toSpeed !== 'number' ||
+        typeof fromStamina !== 'number' ||
+        typeof toStamina !== 'number' ||
+        typeof fromFinished !== 'boolean' ||
+        typeof toFinished !== 'boolean'
+      ) {
+        allFinished = false
+        return
+      }
+
+      const hermitePos =
+        h00 * fromPos + h10 * fromSpeed * frameSpanSec + h01 * toPos + h11 * toSpeed * frameSpanSec
+      const minPos = Math.min(fromPos, toPos) - 0.05
+      const maxPos = Math.max(fromPos, toPos) + 0.05
+      const authPos = Math.max(minPos, Math.min(maxPos, hermitePos))
+      const posError = Math.abs(authPos - horse.position)
+      this.authoritativeMetrics.positionErrorSum += posError
+      this.authoritativeMetrics.positionErrorMax = Math.max(
+        this.authoritativeMetrics.positionErrorMax,
+        posError,
+      )
+      const isNearFinishZone = authPos >= finishZoneStartM || horse.position >= finishZoneStartM
+      const useFinishSlowmoCorrection = this.simSlowmoActive && isNearFinishZone
+      const useFinishZoneCorrection = isNearFinishZone
+      const hardSnapThreshold = useFinishSlowmoCorrection
+        ? AUTHORITATIVE_FINISH_SLOWMO_HARD_SNAP_M
+        : useFinishZoneCorrection
+          ? AUTHORITATIVE_FINISH_ZONE_HARD_SNAP_M
+          : AUTHORITATIVE_POSITION_HARD_SNAP_M
+      const softBlend = useFinishSlowmoCorrection
+        ? AUTHORITATIVE_FINISH_SLOWMO_SOFT_BLEND
+        : useFinishZoneCorrection
+          ? AUTHORITATIVE_FINISH_ZONE_SOFT_BLEND
+          : AUTHORITATIVE_POSITION_SOFT_BLEND
+      const softCorrectedPos = horse.position + (authPos - horse.position) * softBlend
+      const cappedSoftCorrectedPos = useFinishSlowmoCorrection
+        ? horse.position +
+          Math.min(
+            AUTHORITATIVE_FINISH_SLOWMO_MAX_CORRECTION_M,
+            Math.max(0, softCorrectedPos - horse.position),
+          )
+        : useFinishZoneCorrection
+          ? horse.position +
+            Math.min(
+              AUTHORITATIVE_FINISH_ZONE_MAX_CORRECTION_M,
+              Math.max(0, softCorrectedPos - horse.position),
+            )
+          : softCorrectedPos
+      const candidatePos = posError >= hardSnapThreshold ? authPos : cappedSoftCorrectedPos
+      if (posError >= hardSnapThreshold) {
+        this.authoritativeMetrics.hardSnapCount += 1
+        horse.position = Math.max(horse.position, candidatePos)
+      } else {
+        this.authoritativeMetrics.softCorrectionCount += 1
+        horse.position = Math.max(horse.position, candidatePos)
+      }
+      horse.currentSpeed = fromSpeed * (1 - t) + toSpeed * t
+      horse.stamina = fromStamina * (1 - t) + toStamina * t
+      const authoritativeFinishedByFrame = fromFinished || toFinished
+      const authoritativeFinishedByEvent =
+        this.authoritativeFinishedPlayerIds.has(playerId) &&
+        (authPos >= trackLengthM - 0.35 || horse.position >= trackLengthM - 0.35)
+      const plan = this.authoritativeRacePlan?.rankings.find((entry) => entry.playerId === playerId)
+      const isNearFinishForPlanFinish =
+        authPos >= trackLengthM - 0.35 || horse.position >= trackLengthM - 0.35
+      const authoritativeFinishedByPlan =
+        typeof plan?.time === 'number' &&
+        isNearFinishForPlanFinish &&
+        renderElapsedMs >= plan.time * 1000 - 20
+      const finished =
+        authoritativeFinishedByFrame ||
+        authoritativeFinishedByEvent ||
+        authoritativeFinishedByPlan ||
+        horse.position >= trackLengthM - 0.02
+      horse.finished = finished
+      if (finished) {
+        horse.finishTime = plan?.time ?? horse.finishTime
+      }
+
+      if (!finished) {
+        allFinished = false
+      }
+    })
+
+    const rankIndexByPlayerId = new Map(
+      (this.authoritativeRacePlan?.rankings ?? []).map((entry) => [entry.playerId, entry.position]),
+    )
+    simHorses.forEach((horse, index) => {
+      const playerId = this.players?.[index]?.id
+      const rank = playerId ? rankIndexByPlayerId.get(playerId) : undefined
+      if (rank) {
+        horse.updateRank(rank)
+      }
+    })
+
+    // 임시 안전장치:
+    // 서버 finish 이벤트를 아직 하나도 못 받았는데 allFinished가 되면
+    // 클라이언트 시간 오차 때문에 빨리 끝난 걸 수 있어서 한 번 막는다.
+    if (allFinished && this.authoritativeFinishedPlayerIds.size === 0) {
+      if (import.meta.env.DEV) {
+        console.warn('[RaceScene] allFinished suppressed (no authoritative finish events yet)', {
+          currentSet: this.currentSet,
+          renderElapsedMs,
+          winnerSeen: this.authoritativeWinnerFinishedEventSeen,
+        })
+      }
+      return false
+    }
+
+    return allFinished
+  }
+
+  private updateAuthoritativeSimulation(deltaMs: number): boolean {
+    if (!this.authoritativeKeyframe) return false
+    if (this.authoritativeRaceStateStatus === 'prepared') {
+      this.simElapsedSec = 0
+      return false
+    }
+    if (!this.authoritativeRacePlan?.startedAtMillis) {
+      return false
+    }
+
+    const simHorses = this.horseManager.getSimHorses()
+    if (!simHorses.length) return false
+    const renderElapsedMs = this.computeAuthoritativeRenderElapsedMs(deltaMs)
+
+    const framePair = this.resolveFramePairForElapsed(renderElapsedMs)
+    const currentFrame = framePair?.current ?? this.authoritativeKeyframe
+    const nextFrame = framePair?.next ?? this.authoritativeNextKeyframe ?? currentFrame
+    if (!currentFrame || !nextFrame) return false
+    const frameSpan = Math.max(1, nextFrame.elapsedMs - currentFrame.elapsedMs)
+    const t = Math.max(0, Math.min(1, (renderElapsedMs - currentFrame.elapsedMs) / frameSpan))
+    const frameSpanSec = frameSpan / 1000
+
+    this.consumeAuthoritativeRaceEvents(renderElapsedMs)
+    const allFinished = this.applyAuthoritativeFrameToHorses({
+      simHorses,
+      currentFrame,
+      nextFrame,
+      renderElapsedMs,
+      interpolationT: t,
+      frameSpanSec,
+    })
+
+    this.authoritativeMetrics.frameCount += 1
+    return allFinished
+  }
+
+  // 현재 시뮬레이션 말 위치를 화면 좌표로 바꿔서 스프라이트에 반영
   private updateHorsePositions() {
     const simHorses = this.horseManager.getSimHorses()
     const worldXArray: number[] = []
@@ -529,7 +1540,74 @@ export default class RaceScene extends Phaser.Scene {
     this.horseManager.updateHorsePositions(worldXArray)
   }
 
-  // 초기 HUD 업데이트 (레이스 시작 전)
+  private areAllHorsesVisuallyAtFinishLine(): boolean {
+    const simHorses = this.horseManager.getSimHorses()
+    if (!simHorses.length) return false
+    const finishLineM = this.mapManager.getTrackLengthM() - AUTHORITATIVE_VISUAL_FINISH_EPSILON_M
+    return simHorses.every((horse) => horse.position >= finishLineM)
+  }
+
+  private shouldCommitRaceFinish(params: {
+    allFinished: boolean
+    isAuthoritativeMode: boolean
+  }): boolean {
+    if (!params.allFinished) {
+      this.authoritativeFinishPendingSinceMs = null
+      return false
+    }
+    if (!params.isAuthoritativeMode) {
+      return true
+    }
+
+    if (this.areAllHorsesVisuallyAtFinishLine()) {
+      this.authoritativeFinishPendingSinceMs = null
+      return true
+    }
+
+    const nowMs = performance.now()
+    if (this.authoritativeFinishPendingSinceMs == null) {
+      this.authoritativeFinishPendingSinceMs = nowMs
+      if (import.meta.env.DEV) {
+        console.warn('[RaceScene] allFinished waiting for visual finish alignment', {
+          currentSet: this.currentSet,
+          renderElapsedMs: this.lastRenderedElapsedMs,
+        })
+      }
+      return false
+    }
+
+    if (nowMs - this.authoritativeFinishPendingSinceMs < AUTHORITATIVE_VISUAL_FINISH_FALLBACK_MS) {
+      return false
+    }
+
+    if (import.meta.env.DEV) {
+      console.warn('[RaceScene] visual finish fallback timeout reached; committing finish', {
+        currentSet: this.currentSet,
+        renderElapsedMs: this.lastRenderedElapsedMs,
+        waitedMs: nowMs - this.authoritativeFinishPendingSinceMs,
+      })
+    }
+    this.authoritativeFinishPendingSinceMs = null
+    return true
+  }
+
+  private startResultAggregationOverlay() {
+    if (this.isResultAggregationStarted) return
+    this.isResultAggregationStarted = true
+    // 결과 집계 오버레이는 finish 연출(celebration)과 분리된 단계로 관리한다.
+    this.flowUI.hideGUIForWaitingOverlay({
+      hud: this.hud,
+      progressBarManager: this.progressBarManager,
+      horseManager: this.horseManager,
+    })
+    this.flowUI.showWaiting(this, {
+      messageKey: 'game.gatheringResults',
+      onComplete: () => this.showRaceResult(),
+      durationMs: RaceScene.WAITING_DURATION_MS,
+    })
+  }
+
+  // 레이스 시작 전 HUD 기본값 표시
   private updateHUDInitial() {
     const simHorses = this.horseManager.getSimHorses()
     const horseData = simHorses.map((h) => ({
@@ -537,12 +1615,12 @@ export default class RaceScene extends Phaser.Scene {
       position: h.position,
       finished: h.finished,
       finishTime: h.finishTime,
-      currentTime: 0, // 초기 시간
+      currentTime: 0, // 시작 전이라서 0초
     }))
     this.hud.updateRanking(horseData, this.playerHorseIndex)
     this.hud.updateTopRight(0)
 
-    // 플레이어 말의 능력치 업데이트 (레이스 시작 전에도 표시)
+    // 레이스 시작 전에도 내 말 능력치는 HUD에 먼저 보여준다.
     if (simHorses[this.playerHorseIndex]) {
       const playerHorse = simHorses[this.playerHorseIndex]
       this.hud.updateStats({
@@ -560,7 +1638,9 @@ export default class RaceScene extends Phaser.Scene {
   // HUD 업데이트
   private updateHUD() {
     const simHorses = this.horseManager.getSimHorses()
-    const displayTime = (performance.now() - this.raceStartTimestampMs) / 1000
+    // HUD 시간은 실제 시계 시간이 아니라 권위 재생 시간(simElapsedSec)을 쓴다.
+    // 그래야 슬로모가 들어가도 화면 시간과 레이스 진행이 같이 맞는다.
+    const displayTime = Math.max(0, this.simElapsedSec)
 
     const horseData = simHorses.map((h) => ({
       name: h.name,
@@ -571,7 +1651,7 @@ export default class RaceScene extends Phaser.Scene {
     }))
     this.hud.updateRanking(horseData, this.playerHorseIndex)
 
-    // 우상단: 순위표 '기록'과 동일한 시간 (완주 시 finishTime, 미완주 시 currentTime)
+    // 우상단 시간은 순위표 기록과 같은 기준을 쓴다(완주 시 finishTime, 미완주 시 currentTime)
     const playerHorseForTime = simHorses[this.playerHorseIndex]
     const recordTime =
       playerHorseForTime?.finished && playerHorseForTime.finishTime != null
@@ -602,12 +1682,16 @@ export default class RaceScene extends Phaser.Scene {
     if (this.isFinishSequenceTriggered) return
     this.isFinishSequenceTriggered = true
 
+    // FINISH 배너/파티클 시작(celebration start).
+    // 레이스 완료 상태(isRaceFinished)나 결과 집계 시작과는 별도 플래그로 관리한다.
     const targetIndex = leadingHorseIndex ?? this.playerHorseIndex
     const target = this.horseManager?.getHorseSprite(targetIndex)
     playFinishSequence(this, target, {
+      enableSlowmo: false,
+      enableCameraZoom: false,
       onComplete: () => {
         this.finishSequenceDone = true
-        this.events.emit('finish-sequence-done')
+        this.events.emit(RACE_SCENE_EVENTS.FINISH_SEQUENCE_DONE)
       },
     })
   }
@@ -619,29 +1703,65 @@ export default class RaceScene extends Phaser.Scene {
     this.progressBarManager.hide()
     createFireworks(this)
 
-    const simHorses = this.horseManager.getSimHorses()
+    void this.showRaceResultAsync()
+  }
+
+  private getPlayersForResultMapping(): Player[] {
     const playersFromData = this.data.get('players') as Player[] | undefined
-    const playersToUse = this.players ?? playersFromData
+    return this.players ?? playersFromData ?? []
+  }
 
-    const rankings = computeRoundRankings(
-      simHorses.map((h) => ({
-        position: h.position,
-        finished: h.finished,
-        finishTime: h.finishTime ?? null,
-        name: h.name,
-      })),
-      {
-        horseAugmentsByIndex: (i) => this.horseManager.getAccumulatedAugments()[i] ?? [],
-        playerNameByIndex: (i) => playersToUse?.[i]?.name ?? '',
-        currentTime: this.simElapsedSec,
-      },
-    )
+  private mapAuthoritativeRankingsToRoundEntries(
+    rankings: Array<{
+      playerId: string
+      name: string
+      position: number
+      time: number
+      selectedAugments?: Augment[]
+    }>,
+  ): RoundRankingEntry[] {
+    return mapAuthoritativeRankingsToRoundEntriesHelper({
+      rankings,
+      players: this.getPlayersForResultMapping(),
+    })
+  }
 
-    this.roundResults.push(rankings)
+  private async showRaceResultAsync() {
+    const isAuthoritativeMode = hasAuthoritativeRoundResultContext({
+      roomId: this.roomId,
+      playerId: this.playerId,
+      sessionToken: this.sessionToken,
+      roomJoinToken: this.roomJoinToken,
+      hasRoom: !!this.room,
+    })
+    let rankings: RoundRankingEntry[] | null = null
+
+    if (isAuthoritativeMode) {
+      rankings = await this.resolveAuthoritativeRoundRankings()
+      if (!rankings) {
+        console.error('[RaceScene] Authoritative set result is unavailable; retrying.')
+        this.isResultSceneShown = false
+        this.waitingOverlayHandle?.close(false)
+        this.waitingOverlayHandle = this.flowUI.showWaiting(this, {
+          messageKey: 'game.gatheringResults',
+          durationMs: 800,
+          onComplete: () => {
+            this.waitingOverlayHandle = undefined
+            if (!this.isResultSceneShown) {
+              this.showRaceResult()
+            }
+          },
+        })
+        return
+      }
+    } else {
+      rankings = this.computeLocalRoundRankings()
+    }
+
+    this.roundResults[this.currentSet - 1] = rankings
 
     const scenePlugin = this.scene
-    // 결과창을 즉시 띄워, 집계 오버레이가 제거되기 전에 어두운 결과 배경이 보이도록 한다.
-    // 1초 지연 시 그 사이에 맵이 비쳐 부자연스러운 연출이 됨.
+    // 결과창을 바로 띄워서 집계 오버레이가 사라질 때 맵 배경이 잠깐 비치지 않게 한다.
     if (!scenePlugin.get('RaceResultScene')) {
       scenePlugin.add('RaceResultScene', RaceResultScene as typeof Phaser.Scene, false)
     }
@@ -656,36 +1776,539 @@ export default class RaceScene extends Phaser.Scene {
       playerCount,
       currentSet: this.currentSet,
       totalRounds: roundCount,
-      onNextSet: () => this.startNewSet(),
+      onNextSet: () => {
+        void this.handleReadyNextSet()
+      },
       onFinalResult: isLastRound ? () => this.handleFinalResult() : undefined,
     })
   }
 
+  private computeLocalRoundRankings(): RoundRankingEntry[] {
+    const simHorses = this.horseManager.getSimHorses()
+    const playersFromData = this.data.get('players') as Player[] | undefined
+    const playersToUse = this.players ?? playersFromData
+
+    return computeRoundRankings(
+      simHorses.map((h) => ({
+        position: h.position,
+        finished: h.finished,
+        finishTime: h.finishTime ?? null,
+        name: h.name,
+      })),
+      {
+        horseAugmentsByIndex: (i) => this.horseManager.getAccumulatedAugments()[i] ?? [],
+        playerNameByIndex: (i) => playersToUse?.[i]?.name ?? '',
+        currentTime: this.simElapsedSec,
+      },
+    )
+  }
+
+  private isCurrentPlayerHost(): boolean {
+    if (!this.players || !this.playerId) return false
+    const current = this.players.find((player) => player.id === this.playerId)
+    return current?.isHost === true
+  }
+
+  private async resolveAuthoritativeRoundRankings(): Promise<RoundRankingEntry[] | null> {
+    if (!this.roomId || !this.playerId || !this.sessionToken || !this.roomJoinToken || !this.room) {
+      return null
+    }
+    const setIndex = this.currentSet
+
+    if (this.isCurrentPlayerHost() && this.room.status === 'racing') {
+      try {
+        await prepareRace({
+          roomId: this.roomId,
+          playerId: this.playerId,
+          sessionToken: this.sessionToken,
+          joinToken: this.roomJoinToken,
+          setIndex,
+        })
+        await startRace({
+          roomId: this.roomId,
+          playerId: this.playerId,
+          sessionToken: this.sessionToken,
+          joinToken: this.roomJoinToken,
+          setIndex,
+        })
+      } catch (error) {
+        console.warn('[RaceScene] startRace callable failed, continue with polling:', error)
+      }
+    }
+
+    const deadline = Date.now() + 10000
+
+    while (Date.now() < deadline) {
+      try {
+        const response = await getSetResult({
+          roomId: this.roomId,
+          playerId: this.playerId,
+          sessionToken: this.sessionToken,
+          joinToken: this.roomJoinToken,
+          setIndex,
+        })
+
+        if (response.data.hasResult) {
+          return this.mapAuthoritativeRankingsToRoundEntries(response.data.rankings)
+        }
+      } catch (error) {
+        console.warn('[RaceScene] getSetResult polling failed:', error)
+      }
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, 250)
+      })
+    }
+
+    return null
+  }
+
   private handleFinalResult() {
+    void this.handleFinalResultAsync()
+  }
+
+  private scheduleFinalResultBackfillRetry(missingRoundIndexes: number[]) {
+    if (import.meta.env.DEV) {
+      console.warn('[RaceScene] Missing round results before final result. Retrying...', {
+        retry: this.finalResultBackfillRetryCount,
+        missingRoundIndexes,
+      })
+    }
+    this.waitingOverlayHandle?.close(false)
+    this.waitingOverlayHandle = this.flowUI.showWaiting(this, {
+      messageKey: 'game.gatheringResults',
+      durationMs: 600,
+      onComplete: () => {
+        this.waitingOverlayHandle = undefined
+        void this.handleFinalResultAsync()
+      },
+    })
+  }
+
+  private async handleFinalResultAsync() {
+    await this.fillMissingRoundResultsFromServer()
+    const missingRoundIndexes = this.getMissingRoundResultIndexes()
+    const backfillAction = resolveFinalResultBackfillAction({
+      missingRoundIndexes,
+      retryCount: this.finalResultBackfillRetryCount,
+      maxRetries: FINAL_RESULT_BACKFILL_RETRY_MAX,
+    })
+    if (backfillAction.type === 'retry') {
+      this.finalResultBackfillRetryCount += 1
+      this.scheduleFinalResultBackfillRetry(missingRoundIndexes)
+      return
+    }
+    if (backfillAction.type === 'proceedWithIncomplete') {
+      console.error('[RaceScene] Round result completeness check failed', {
+        missingRoundIndexes,
+        roundCount: this.room?.roundCount,
+        currentSet: this.currentSet,
+      })
+    }
+    if (backfillAction.type === 'complete') {
+      this.finalResultBackfillRetryCount = 0
+    }
     if (this.roundResults.length === 0) return
 
-    const playerCount = this.players?.length ?? 4
-    if (typeof window !== 'undefined') {
-      const playersFromData = this.data.get('players') as Player[] | undefined
-      const playersToUse = this.players ?? playersFromData
-      const currentPlayerName = playersToUse?.find((p) => p.id === this.playerId)?.name
+    this.resetNextSetTransitionWaitingState()
 
-      window.dispatchEvent(
-        new CustomEvent('race-final-result', {
-          detail: {
-            roundResults: this.roundResults,
-            playerCount,
-            roomId: this.roomId,
-            playerId: this.playerId,
-            playerName: currentPlayerName,
-          },
-        }),
-      )
-    }
+    this.dispatchRaceFinalResultEvent()
     this.scene.stop('RaceResultScene')
   }
 
-  private startNewSet() {
+  private dispatchRaceFinalResultEvent() {
+    if (typeof window === 'undefined') return
+
+    const playersFromData = this.data.get('players') as Player[] | undefined
+    const playersToUse = this.players ?? playersFromData
+
+    window.dispatchEvent(
+      new CustomEvent('race-final-result', {
+        detail: buildRaceFinalResultEventDetail({
+          roundResults: this.roundResults,
+          players: playersToUse ?? [],
+          playerId: this.playerId,
+          roomId: this.roomId,
+        }),
+      }),
+    )
+  }
+
+  private async fillMissingRoundResultsFromServer() {
+    if (!this.roomId || !this.playerId || !this.sessionToken || !this.roomJoinToken || !this.room) {
+      return
+    }
+
+    const targetRoundCount = this.room.roundCount ?? this.currentSet
+    for (let setIndex = 1; setIndex <= targetRoundCount; setIndex++) {
+      if (this.roundResults[setIndex - 1]?.length) continue
+
+      try {
+        const response = await getSetResult({
+          roomId: this.roomId,
+          playerId: this.playerId,
+          sessionToken: this.sessionToken,
+          joinToken: this.roomJoinToken,
+          setIndex,
+        })
+        if (!response.data.hasResult) continue
+        this.roundResults[setIndex - 1] = this.mapAuthoritativeRankingsToRoundEntries(
+          response.data.rankings,
+        )
+      } catch (error) {
+        if (import.meta.env.DEV) {
+          console.warn('[RaceScene] fillMissingRoundResultsFromServer failed:', { setIndex, error })
+        }
+      }
+    }
+  }
+
+  private getMissingRoundResultIndexes(): number[] {
+    return getMissingRoundResultIndexesHelper({
+      roundResults: this.roundResults,
+      roundCount: this.room?.roundCount ?? this.currentSet,
+    })
+  }
+
+  // ==================== DEV Authoritative Debug Helpers ====================
+  // create/toggle: 오버레이 라이프사이클
+  // snapshot/copy: F9 측정값 수집(콘솔/클립보드)
+  // render: 화면 표시(저주기 갱신)
+  private createAuthoritativeDebugOverlay() {
+    if (!import.meta.env.DEV) return
+    this.authoritativeDebugText = this.add
+      .text(12, 12, '', {
+        fontSize: '12px',
+        color: '#9cf7ff',
+        backgroundColor: 'rgba(0, 0, 0, 0.55)',
+        padding: { x: 6, y: 4 },
+      })
+      .setScrollFactor(0)
+      .setDepth(10000)
+    window.addEventListener('keydown', this.handleAuthoritativeDebugHotkey)
+  }
+
+  private toggleAuthoritativeDebugOverlay() {
+    this.authoritativeDebugOverlayEnabled = !this.authoritativeDebugOverlayEnabled
+    this.authoritativeDebugText?.setVisible(this.authoritativeDebugOverlayEnabled)
+    console.info(
+      `[RaceScene][AuthReplay][DEV] overlay=${this.authoritativeDebugOverlayEnabled ? 'enabled' : 'hidden'} (F8 toggle / F9 copy snapshot)`,
+    )
+  }
+
+  // F9 콘솔/클립보드 출력용: 한 줄 스냅샷 포맷
+  private buildAuthoritativeDebugSnapshotLine(): string {
+    return buildAuthoritativeDebugSnapshotLineHelper({
+      currentSet: this.currentSet,
+      simElapsedSec: this.simElapsedSec,
+      metrics: this.authoritativeMetrics,
+    })
+  }
+
+  private async copyAuthoritativeDebugOverlaySnapshot() {
+    const snapshot = this.buildAuthoritativeDebugSnapshotLine()
+    console.info(`[RaceScene][AuthReplay][DEV] snapshot ${snapshot}`)
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(snapshot)
+        console.info('[RaceScene][AuthReplay][DEV] snapshot copied to clipboard')
+      }
+    } catch (error) {
+      console.warn('[RaceScene][AuthReplay][DEV] snapshot clipboard copy failed:', error)
+    }
+  }
+
+  private shouldRenderAuthoritativeDebugOverlay(nowMs: number): boolean {
+    const result = shouldRenderAuthoritativeDebugOverlayHelper({
+      nowMs,
+      lastRenderMs: this.authoritativeDebugLastRenderMs,
+      minIntervalMs: 250,
+    })
+    this.authoritativeDebugLastRenderMs = result.nextLastRenderMs
+    return result.shouldRender
+  }
+
+  // 화면 오버레이용: 여러 줄 가독성 포맷
+  private buildAuthoritativeDebugOverlayText(): string {
+    return buildAuthoritativeDebugOverlayTextHelper({
+      currentSet: this.currentSet,
+      simElapsedSec: this.simElapsedSec,
+      metrics: this.authoritativeMetrics,
+    })
+  }
+
+  private resetAuthoritativeReplayState() {
+    this.isBootstrappingRaceStart = false
+    this.raceStartBootstrapReadyForCountdown = false
+    this.raceStartBootstrapBeganAtMs = null
+    this.raceStartBootstrapMinReadyAtMs = 0
+    this.hasReceivedInitialAuthoritativeFrame = false
+    this.hasReceivedAnyAuthoritativePollResponse = false
+    this.raceStartBootstrapTimeoutEvent?.remove(false)
+    this.raceStartBootstrapTimeoutEvent = undefined
+    this.authoritativeRacePlan = undefined
+    this.authoritativeKeyframe = undefined
+    this.authoritativeNextKeyframe = undefined
+    this.authoritativeFrameBuffer = []
+    this.authoritativeEventsWindow = []
+    this.consumedRaceEventIds.clear()
+    this.authoritativeFinishedPlayerIds.clear()
+    this.authoritativeElapsedMs = 0
+    this.authoritativeNowMs = 0
+    this.smoothedElapsedMs = null
+    this.lastRenderedElapsedMs = 0
+    this.lastAuthoritativePollClientTimeMs = 0
+    this.authoritativeWinnerFinishedEventSeen = false
+    this.authoritativeFinishPendingSinceMs = null
+    this.authoritativeRaceStateStatus = null
+    this.authoritativeMetrics = {
+      frameCount: 0,
+      hardSnapCount: 0,
+      softCorrectionCount: 0,
+      timeHardSnapCount: 0,
+      positionErrorSum: 0,
+      positionErrorMax: 0,
+    }
+    this.isServerRaceRequested = false
+    this.isServerRacePrepared = false
+    this.isPollingServerRaceResult = false
+    this.serverRacePollEvent?.remove(false)
+    this.serverRacePollEvent = undefined
+  }
+
+  private renderAuthoritativeDebugOverlay() {
+    if (!import.meta.env.DEV || !this.authoritativeDebugText) return
+    if (!this.authoritativeDebugOverlayEnabled) return
+    if (!this.isServerAuthoritativeRaceMode()) {
+      this.authoritativeDebugText.setText('[AuthReplay] inactive')
+      return
+    }
+    const now = performance.now()
+    if (!this.shouldRenderAuthoritativeDebugOverlay(now)) return
+    this.authoritativeDebugText.setText(this.buildAuthoritativeDebugOverlayText())
+  }
+
+  private getNextSetSyncRequestContext(): {
+    roomId: string
+    playerId: string
+    sessionToken: string
+    joinToken: string
+  } | null {
+    return buildNextSetSyncRequestContextHelper({
+      roomId: this.roomId,
+      playerId: this.playerId,
+      sessionToken: this.sessionToken,
+      roomJoinToken: this.roomJoinToken,
+      room: this.room,
+    })
+  }
+
+  private logNextSetTransitionDebug(source: string, extra?: Record<string, unknown>) {
+    if (!import.meta.env.DEV) return
+    console.info('[RaceScene][NextSetTransition]', {
+      source,
+      roomId: this.roomId,
+      playerId: this.playerId,
+      roomStatus: this.room?.status,
+      roomCurrentSet: this.room?.currentSet,
+      currentSet: this.currentSet,
+      isWaitingForNextSetTransition: this.isWaitingForNextSetTransition,
+      isSyncingNextSetTransition: this.isSyncingNextSetTransition,
+      lastStartedSetTransitionTargetSet: this.lastStartedSetTransitionTargetSet,
+      ...extra,
+    })
+  }
+
+  private tryResolveNextSetFromRoomStatus(): boolean {
+    const action = resolveRoomStatusNextSetAction(this.room?.status)
+    const resolved = this.applyNextSetTransitionAction(action, 'roomStatusResolve')
+    if (resolved) {
+      this.logNextSetTransitionDebug('roomStatusResolve:applied', { action })
+    }
+    return resolved
+  }
+
+  private applyReadyNextSetResponse(data: {
+    allReady?: boolean
+    nextStatus?: string
+    currentSet?: number
+  }): boolean {
+    this.logNextSetTransitionDebug('responseApply:received', {
+      allReady: data.allReady,
+      nextStatus: data.nextStatus,
+      responseCurrentSet: data.currentSet,
+    })
+    return this.applyNextSetTransitionAction(
+      resolveReadyNextSetResponseAction(data),
+      'responseApply',
+    )
+  }
+
+  private applyNextSetTransitionAction(action: NextSetTransitionAction, source: string): boolean {
+    if (action.type === 'startNewSet') {
+      const targetSet = action.currentSet ?? this.room?.currentSet
+      if (
+        typeof targetSet === 'number' &&
+        this.lastStartedSetTransitionTargetSet === targetSet &&
+        !this.isWaitingForNextSetTransition
+      ) {
+        this.logNextSetTransitionDebug(`${source}:duplicateStartNewSetIgnored`, {
+          targetSet,
+          action,
+        })
+        return true
+      }
+
+      this.logNextSetTransitionDebug(`${source}:startNewSet`, { targetSet, action })
+      if (typeof targetSet === 'number') {
+        this.lastStartedSetTransitionTargetSet = targetSet
+      }
+      if (typeof action.currentSet === 'number') {
+        this.currentSet = action.currentSet
+      }
+      this.startNewSet(typeof targetSet === 'number' ? targetSet : undefined)
+      return true
+    }
+    if (action.type === 'finalResult') {
+      this.logNextSetTransitionDebug(`${source}:finalResult`, { action })
+      this.handleFinalResult()
+      return true
+    }
+    return false
+  }
+
+  private async handleReadyNextSet() {
+    this.logNextSetTransitionDebug('readyNextSet:clicked')
+    const nextSetContext = this.getNextSetSyncRequestContext()
+    if (!nextSetContext) {
+      this.logNextSetTransitionDebug('readyNextSet:missingContext')
+      if (this.tryResolveNextSetFromRoomStatus()) {
+        return
+      }
+      this.beginWaitingForNextSetTransition()
+      return
+    }
+
+    try {
+      const response = await readyNextSet({
+        ...nextSetContext,
+        setIndex: this.currentSet,
+      })
+
+      if (this.applyReadyNextSetResponse(response.data)) {
+        return
+      }
+
+      this.beginWaitingForNextSetTransition()
+    } catch (error) {
+      console.warn('[RaceScene] readyNextSet failed; keep authoritative waiting:', error)
+      this.logNextSetTransitionDebug('readyNextSet:error', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      this.beginWaitingForNextSetTransition()
+    }
+  }
+
+  private beginWaitingForNextSetTransition() {
+    this.logNextSetTransitionDebug('waitingBegin')
+    this.hud.setAugmentPreview(null)
+    this.flowUI.hideGUIForWaitingOverlay({
+      hud: this.hud,
+      progressBarManager: this.progressBarManager,
+      horseManager: this.horseManager,
+    })
+    this.isWaitingForNextSetTransition = true
+    this.waitingOverlayHandle?.close(false)
+    this.waitingOverlayHandle = this.flowUI.showWaiting(this, {
+      messageKey: 'game.waitingAfterResult',
+      durationMs: null,
+      onComplete: () => {
+        // manual close only
+      },
+    })
+
+    // readyNextSet 응답 경합으로 이미 상태가 넘어간 경우를 즉시 복구한다.
+    if (this.tryResolveNextSetFromRoomStatus()) {
+      return
+    }
+
+    this.startNextSetSyncPolling()
+  }
+
+  private startNextSetSyncPolling() {
+    this.logNextSetTransitionDebug('polling:start')
+    this.nextSetSyncPollEvent?.remove(false)
+    this.nextSetSyncPollEvent = this.time.addEvent({
+      delay: 1500,
+      loop: true,
+      callback: () => {
+        void this.retryNextSetTransition()
+      },
+    })
+  }
+
+  private stopNextSetSyncPolling() {
+    this.logNextSetTransitionDebug('polling:stop')
+    this.nextSetSyncPollEvent?.remove(false)
+    this.nextSetSyncPollEvent = undefined
+  }
+
+  private closeWaitingOverlay() {
+    this.waitingOverlayHandle?.close(false)
+    this.waitingOverlayHandle = undefined
+  }
+
+  private resetNextSetTransitionWaitingState() {
+    this.logNextSetTransitionDebug('waitingReset')
+    this.isWaitingForNextSetTransition = false
+    this.stopNextSetSyncPolling()
+    this.isSyncingNextSetTransition = false
+    this.closeWaitingOverlay()
+  }
+
+  private async retryNextSetTransition() {
+    if (!this.isWaitingForNextSetTransition || this.isSyncingNextSetTransition) {
+      return
+    }
+    const nextSetContext = this.getNextSetSyncRequestContext()
+    if (!nextSetContext) return
+
+    if (this.tryResolveNextSetFromRoomStatus()) {
+      return
+    }
+
+    if (this.room?.status !== 'setResult') {
+      this.logNextSetTransitionDebug('polling:roomStatusNotSetResult', {
+        roomStatus: this.room?.status,
+      })
+      return
+    }
+
+    this.logNextSetTransitionDebug('polling:readyNextSetRetry')
+    this.isSyncingNextSetTransition = true
+    try {
+      const response = await readyNextSet({
+        ...nextSetContext,
+        setIndex: this.currentSet,
+      })
+
+      this.applyReadyNextSetResponse(response.data)
+    } catch (error) {
+      if (import.meta.env.DEV) {
+        console.warn('[RaceScene] retryNextSetTransition failed:', error)
+      }
+    } finally {
+      this.isSyncingNextSetTransition = false
+    }
+  }
+
+  private startNewSet(targetSet?: number) {
+    this.logNextSetTransitionDebug('startNewSet:begin', { targetSet })
+    this.resetNextSetTransitionWaitingState()
+    this.resetAuthoritativeReplayState()
+    this.finalResultBackfillRetryCount = 0
+    this.isResultAggregationStarted = false
+
     const nextState = this.runtimeController.resetForNextSet({
       state: this.getRuntimeState(),
       horseManager: this.horseManager,
@@ -694,8 +2317,20 @@ export default class RaceScene extends Phaser.Scene {
       mapManager: this.mapManager,
     })
     this.applyRuntimeState(nextState)
+
+    if (typeof targetSet === 'number') {
+      this.currentSet = targetSet
+    } else if (this.room?.status === 'augmentSelection' && this.room?.currentSet) {
+      this.currentSet = this.room.currentSet
+    }
     this.updateHUDInitial()
-    this.showAugmentSelection(generateRandomRarity())
+    this.logNextSetTransitionDebug('startNewSet:showAugmentSelection', {
+      targetSet,
+      effectiveCurrentSet: this.currentSet,
+      roomStatus: this.room?.status,
+      roomCurrentSet: this.room?.currentSet,
+    })
+    void this.showAugmentSelection(generateRandomRarity())
   }
 
   /**
@@ -703,76 +2338,128 @@ export default class RaceScene extends Phaser.Scene {
    * PhaserGame에서 데이터가 변경되어 이벤트가 발생했을 때 호출됨
    */
   private onGameDataUpdated() {
-    if (import.meta.env.DEV) {
-      console.log('[RaceScene] Game data updated (from PhaserGame):', {
-        roomId: this.roomId,
-        playerId: this.playerId,
-        hasRoom: !!this.room,
-        playersCount: this.players?.length || 0,
-        roomStatus: this.room?.status,
-        hasSelectedHorse: !!this.selectedHorse,
-        selectedHorseName: this.selectedHorse?.name,
-      })
-    }
+    const previousSet = this.currentSet
+    this.logGameDataUpdatedDebug()
+    this.syncHorseNamesFromGameData()
+    this.syncRuntimeRoomDerivedState()
+    this.syncHorseBaseStatsFromPlayers()
+    this.tryResumeRaceAfterAugmentSelectionWait()
+    this.tryResolveWaitingNextSetFromRoomUpdate(previousSet)
+  }
+
+  private logGameDataUpdatedDebug() {
+    if (!import.meta.env.DEV) return
+
+    console.log('[RaceScene] Game data updated (from PhaserGame):', {
+      roomId: this.roomId,
+      playerId: this.playerId,
+      hasRoom: !!this.room,
+      playersCount: this.players?.length || 0,
+      roomStatus: this.room?.status,
+      hasSelectedHorse: !!this.selectedHorse,
+      selectedHorseName: this.selectedHorse?.name,
+    })
 
     // 디버깅에 필요한 상세 payload는 DEV에서만 노출
-    if (import.meta.env.DEV) {
-      console.log('[RaceScene] Updated room:', this.room)
-      console.log('[RaceScene] Updated players:', this.players)
-      if (this.selectedHorse) {
-        console.log('[RaceScene] Updated Selected Horse:', this.selectedHorse)
-        console.log('[RaceScene] Updated Horse Stats:', this.selectedHorse.stats)
+    console.log('[RaceScene] Updated room:', this.room)
+    console.log('[RaceScene] Updated players:', this.players)
+    if (this.selectedHorse) {
+      console.log('[RaceScene] Updated Selected Horse:', this.selectedHorse)
+      console.log('[RaceScene] Updated Horse Stats:', this.selectedHorse.stats)
+    }
+  }
+
+  private syncHorseNamesFromGameData() {
+    if (!this.horseManager) return
+
+    // 우선순위: 1) this.players, 2) this.data.get('players')
+    const playersFromData = this.data.get('players') as Player[] | undefined
+    const playersToUse = this.players || playersFromData
+    if (!playersToUse || playersToUse.length === 0) return
+
+    const simHorses = this.horseManager.getSimHorses()
+    const playerNames = playersToUse.map((p, index) => p.name || `Horse_${index + 1}`)
+    simHorses.forEach((horse, index) => {
+      if (playerNames[index]) {
+        horse.name = playerNames[index]
       }
+    })
+  }
+
+  private syncRuntimeRoomDerivedState() {
+    if (!this.room) return
+
+    // roundCount는 필요한 지점에서 this.room?.roundCount로 직접 사용한다.
+    this.remainingRerolls = this.getRemainingRerollsForCurrentPlayer()
+
+    if (this.room.currentSet) {
+      this.currentSet = this.room.currentSet
     }
 
-    // HorseManager가 이미 생성된 경우, 표시 이름을 room의 플레이어 이름으로 동기화한다.
-    if (this.horseManager) {
-      // 우선순위: 1) this.players, 2) this.data.get('players')
-      const playersFromData = this.data.get('players') as Player[] | undefined
-      const playersToUse = this.players || playersFromData
+    if (!this.players || !this.playerId) return
+    const currentPlayerIndex = this.players.findIndex((p) => p.id === this.playerId)
+    if (currentPlayerIndex < 0) return
 
-      if (playersToUse && playersToUse.length > 0) {
-        const simHorses = this.horseManager.getSimHorses()
-        const playerNames = playersToUse.map((p, index) => p.name || `Horse_${index + 1}`)
+    this.playerHorseIndex = currentPlayerIndex
+    this.progressBarManager?.setPlayerHorseIndex(this.playerHorseIndex)
+  }
 
-        simHorses.forEach((horse, index) => {
-          if (playerNames[index]) {
-            horse.name = playerNames[index]
-          }
-        })
-      }
+  private syncHorseBaseStatsFromPlayers() {
+    if (!this.horseManager || !this.players || this.players.length === 0) return
+
+    const simHorses = this.horseManager.getSimHorses()
+    this.players.forEach((player, index) => {
+      if (!player.horseStats || !simHorses[index]) return
+      simHorses[index].baseStats = { ...player.horseStats }
+    })
+  }
+
+  private tryResumeRaceAfterAugmentSelectionWait() {
+    if (
+      !shouldResumeAfterAugmentSelectionWait({
+        isWaitingForOtherAugmentSelections: this.isWaitingForOtherAugmentSelections,
+        roomStatus: this.room?.status,
+      })
+    ) {
+      return
     }
+    this.resumeRaceAfterAugmentSelectionWait()
+  }
 
-    // room 업데이트가 오면 세트/리롤/플레이어 인덱스를 런타임 상태에 반영한다.
-    if (this.room) {
-      // roundCount는 필요한 지점에서 this.room?.roundCount로 직접 사용한다.
-      if (this.room.rerollLimit !== undefined) {
-        this.remainingRerolls = this.room.rerollLimit
-      }
-
-      // 현재 세트 업데이트
-      if (this.room.currentSet) {
-        this.currentSet = this.room.currentSet
-      }
-
-      // 현재 플레이어의 말 인덱스 찾기 (playerId 기준)
-      if (this.players && this.playerId) {
-        const currentPlayerIndex = this.players.findIndex((p) => p.id === this.playerId)
-        if (currentPlayerIndex >= 0) {
-          this.playerHorseIndex = currentPlayerIndex
-          this.progressBarManager?.setPlayerHorseIndex(this.playerHorseIndex)
-        }
-      }
+  private tryResolveWaitingNextSetFromRoomUpdate(previousSet: number) {
+    const action = resolveWaitingNextSetRoomUpdateAction({
+      isWaitingForNextSetTransition: this.isWaitingForNextSetTransition,
+      roomStatus: this.room?.status,
+      roomCurrentSet: this.room?.currentSet,
+      previousSet,
+    })
+    if (action.type === 'none') return
+    this.logNextSetTransitionDebug('roomUpdateResolve', { previousSet, action })
+    if (action.type === 'startNewSet' && typeof this.room?.currentSet === 'number') {
+      this.applyNextSetTransitionAction(
+        { type: 'startNewSet', currentSet: this.room.currentSet },
+        'roomUpdateResolve',
+      )
+      return
     }
+    this.applyNextSetTransitionAction(action, 'roomUpdateResolve')
   }
 
   private handleSceneShutdown() {
     // RaceScene 재시작 시 중복 구독/오브젝트 잔존을 막기 위한 정리 루틴.
     this.dataSync.unsubscribe()
-    this.events.off('finish-sequence-slowmo', this.handleFinishSequenceSlowmo)
-    this.events.off('finish-sequence-slowmo-restore', this.handleFinishSequenceSlowmoRestore)
+    this.unregisterSceneEventBridge()
     this.augmentDimOverlay?.destroy()
     this.augmentDimOverlay = undefined
+    this.closeWaitingOverlay()
+    this.stopNextSetSyncPolling()
+    this.isSyncingNextSetTransition = false
+    this.isWaitingForOtherAugmentSelections = false
+    this.isWaitingForNextSetTransition = false
+    this.resetAuthoritativeReplayState()
+    window.removeEventListener('keydown', this.handleAuthoritativeDebugHotkey)
+    this.authoritativeDebugText?.destroy()
+    this.authoritativeDebugText = undefined
     this.hud?.destroy()
     this.horseManager?.destroy()
   }
@@ -785,9 +2472,19 @@ export default class RaceScene extends Phaser.Scene {
   private applyGameData(data: RaceGameData) {
     this.roomId = data.roomId
     this.playerId = data.playerId
+    this.sessionToken = data.sessionToken
+    this.roomJoinToken = data.roomJoinToken
     this.room = data.room
     this.players = data.players
     this.selectedHorse = data.selectedHorse
+  }
+
+  private getRemainingRerollsForCurrentPlayer(): number {
+    const totalLimit = this.room?.rerollLimit ?? 3
+    if (!this.players || !this.playerId) return totalLimit
+    const me = this.players.find((player) => player.id === this.playerId)
+    const used = me?.rerollUsed ?? 0
+    return Math.max(0, totalLimit - used)
   }
 
   private getRuntimeState(): RaceRuntimeState {
@@ -814,6 +2511,7 @@ export default class RaceScene extends Phaser.Scene {
     this.isResultSceneShown = state.isResultSceneShown
     this.isFinishSequenceTriggered = state.isFinishSequenceTriggered
     this.finishSequenceDone = state.finishSequenceDone
+    this.isResultAggregationStarted = false
     this.simTimeAccumulatorSec = state.simTimeAccumulatorSec
     this.simElapsedSec = state.simElapsedSec
     this.raceStartTimestampMs = state.raceStartTimestampMs

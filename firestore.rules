@@ -1,37 +1,57 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function roomRef(roomId) {
+      return /databases/$(database)/documents/rooms/$(roomId);
+    }
+
+    function isRoomFresh(roomData) {
+      return roomData.createdAt is timestamp &&
+        request.time < roomData.createdAt + duration.value(7, 'd');
+    }
+
+    // 상위 룸 문서를 직접 읽어 서브컬렉션 접근을 허용한다.
+    // /rooms/{roomId} 규칙에서 자기 자신을 get/exists하지 않도록 분리한다.
+    function canReadRoomFromParent(roomId) {
+      return exists(roomRef(roomId)) &&
+        isRoomFresh(get(roomRef(roomId)).data);
+    }
+
     // 룸 문서
     match /rooms/{roomId} {
-      // 읽기: 모든 사용자가 읽을 수 있음 (실시간 동기화를 위해)
+      // 읽기:
+      // - get만 허용(rooms 전체 list 차단)
+      // - roomId를 알고 있고, 최근 생성된 룸(7일)만 허용
       // 쓰기: Cloud Functions만 가능 (보안을 위해)
-      allow read: if true;
-      allow write: if false; // 모든 쓰기는 Cloud Functions를 통해 수행
+      allow get: if resource != null && isRoomFresh(resource.data);
+      allow list: if false;
+      allow write: if false;
 
       // 플레이어 서브컬렉션
       match /players/{playerId} {
-        // 읽기: 모든 사용자가 읽을 수 있음 (플레이어 리스트 표시)
-        // 쓰기: Cloud Functions만 가능
-        allow read: if true;
+        // 읽기:
+        // - roomId 단위 접근만 허용
+        // - list는 허용(로비 실시간 목록용)
+        allow get, list: if canReadRoomFromParent(roomId);
         allow write: if false;
       }
 
       // 세트 서브컬렉션
       match /sets/{setId} {
-        // 읽기: 모든 사용자가 읽을 수 있음 (게임 진행 상황)
-        // 쓰기: Cloud Functions만 가능
-        allow read: if true;
+        // 읽기:
+        // - roomId 단위 접근만 허용
+        // - list는 불허(불필요한 전체 세트 스캔 차단)
+        allow get: if canReadRoomFromParent(roomId);
+        allow list: if false;
         allow write: if false;
       }
 
       // 로그 서브컬렉션 (선택사항)
       match /logs/{logId} {
-        // 읽기: 모든 사용자가 읽을 수 있음 (디버깅용)
-        // 쓰기: Cloud Functions만 가능
-        allow read: if true;
+        // 로그는 클라이언트 비공개
+        allow read: if false;
         allow write: if false;
       }
     }
   }
 }
-

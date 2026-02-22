@@ -1,6 +1,8 @@
 {
   "projects": {
-    "default": "demo-hybrid-horse-race"
+    "default": "hybrid-horse-race-staging",
+    "demo": "demo-hybrid-horse-race",
+    "staging": "hybrid-horse-race-staging",
+    "prod": "hybrid-horse-race-prod"
   }
 }
-

@@ -1,18 +1,16 @@
 /**
- * 개발용 랜딩 페이지 테스트
- * Firebase 없이도 룸 생성 기능을 테스트할 수 있습니다.
- *
- * 사용법:
- * 1. 개발 서버 실행: npm run dev
- * 2. 브라우저에서 / 접근
- * 3. 룸 생성 기능 테스트 (Mock 데이터 사용)
+ * 랜딩 페이지
+ * 실서비스 Firebase 호출을 우선 쓰고, 개발 설정일 때만 mock fallback을 허용한다.
  */
 
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Users, Flag, RefreshCw, Plus, Minus } from 'lucide-react'
-import { getUserId } from '../lib/user-id'
+import { withGuestSessionRetry } from '../lib/user-id'
+import { createRoom as createRoomCallable } from '../lib/firebase-functions'
+import { setRoomJoinToken } from '../lib/room-join-token'
+import { resolvePlayerDisplayName } from '../lib/player-name'
 
 const MIN_ROUND_COUNT = 1
 const MAX_ROUND_COUNT = 3
@@ -22,6 +20,8 @@ const MAX_PLAYER_COUNT = 8
 
 const MIN_REROLL_COUNT = 0
 const MAX_REROLL_COUNT = 5
+const ENABLE_MOCK_ROOM_FALLBACK =
+  import.meta.env.DEV && import.meta.env.VITE_ENABLE_MOCK_ROOM_FALLBACK === 'true'
 
 export function LandingPage() {
   const { t } = useTranslation()
@@ -33,7 +33,6 @@ export function LandingPage() {
   const [rerollCount, setRerollCount] = useState(3)
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [isBannerCollapsed, setIsBannerCollapsed] = useState(true)
 
   useEffect(() => {
     if (!isDev) {
@@ -48,22 +47,47 @@ export function LandingPage() {
   const decreaseReroll = () => setRerollCount((prev) => Math.max(prev - 1, MIN_REROLL_COUNT))
   const increaseReroll = () => setRerollCount((prev) => Math.min(prev + 1, MAX_REROLL_COUNT))
 
-  // Mock 룸 생성 (Firebase 호출 없이)
+  // 룸 생성은 Firebase callable을 먼저 시도하고, 개발 설정일 때만 mock으로 넘어간다.
   const handleCreateRoom = async () => {
     if (isCreating) return
 
     setIsCreating(true)
     setError(null)
 
-    // Mock: 약간의 지연 시뮬레이션
-    await new Promise((resolve) => setTimeout(resolve, 500))
-
     try {
-      const playerId = getUserId()
-      // Mock roomId 생성
-      const newRoomId = `test-room-${Date.now()}`
+      let playerId = ''
+      const newRoomId = await withGuestSessionRetry(async (session) => {
+        playerId = session.guestId
+        try {
+          const response = await createRoomCallable({
+            playerId: session.guestId,
+            sessionToken: session.sessionToken,
+            hostName: resolvePlayerDisplayName(session.guestId),
+            title: `Hybrid Horse Race (${Date.now()})`,
+            maxPlayers: playerCount,
+            roundCount,
+            rerollLimit: rerollCount,
+          })
+          setRoomJoinToken(
+            response.data.roomId,
+            response.data.joinToken,
+            response.data.joinTokenExpiresAtMillis,
+          )
+          return response.data.roomId
+        } catch (callableError) {
+          if (!ENABLE_MOCK_ROOM_FALLBACK) {
+            throw callableError
+          }
+          console.warn(
+            '[LandingPage] createRoom callable failed, fallback to mock room:',
+            callableError,
+          )
+          await new Promise((resolve) => setTimeout(resolve, 500))
+          return `test-room-${Date.now()}`
+        }
+      })
 
-      // 게임 설정을 localStorage에 저장 (개선 사항 3)
+      // 다음 페이지에서도 같은 설정을 쓰려고 localStorage에 저장해 둔다.
       const roomConfig = {
         playerCount,
         roundCount,
@@ -71,18 +95,28 @@ export function LandingPage() {
       }
       localStorage.setItem('dev_room_config', JSON.stringify(roomConfig))
 
-      // playerId를 localStorage에 저장 (개선 사항 7)
+      // 현재 게스트 playerId도 저장해 둔다.
       localStorage.setItem('dev_player_id', playerId)
 
-      // 테스트 페이지로 이동 (roomId와 playerId만 전달)
+      // 로비 페이지로 이동할 때 roomId/playerId를 같이 넘긴다.
       const params = new URLSearchParams({
         roomId: newRoomId,
         playerId, // playerId 전달 추가
       })
       navigate(`/lobby?${params.toString()}`)
     } catch (err) {
-      console.error('Failed to create room:', err)
-      setError(t('navigation.createFailed'))
+      const message =
+        err && typeof err === 'object' && 'message' in err
+          ? String((err as { message?: unknown }).message)
+          : t('navigation.createFailed')
+      console.error('Failed to create room:', {
+        err,
+        playerCount,
+        roundCount,
+        rerollCount,
+      })
+      setError(message)
+    } finally {
       setIsCreating(false)
     }
   }
@@ -99,41 +133,7 @@ export function LandingPage() {
 
   return (
     <div className="flex w-full flex-1 flex-col items-center justify-center">
-      {/* 개발용 안내 */}
-      {isBannerCollapsed ? (
-        /* 접었을 때: 펼치기 버튼만 표시 */
-        <button
-          onClick={() => setIsBannerCollapsed(false)}
-          className="fixed top-2 left-2 z-50 rounded-lg bg-black/80 px-3 py-2 text-white backdrop-blur-sm transition hover:bg-black/90 shadow-lg"
-        >
-          <span className="text-sm">▼ 개발 배너</span>
-        </button>
-      ) : (
-        /* 펼쳤을 때: 전체 배너 표시 */
-        <div className="fixed top-0 left-0 right-0 z-50 bg-black/80 p-4 text-white">
-          <div className="mx-auto max-w-7xl">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold">🧪 랜딩 페이지 테스트 모드</h2>
-              <button
-                onClick={() => setIsBannerCollapsed(true)}
-                className="ml-4 rounded bg-gray-700/50 px-3 py-1 text-sm transition hover:bg-gray-700/70"
-              >
-                ▲
-              </button>
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
-              <button
-                onClick={() => navigate('/')}
-                className="rounded bg-blue-600 px-3 py-1 text-sm hover:bg-blue-700"
-              >
-                🔄 처음부터 다시 테스트
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 실제 LandingPage UI (독립적으로 구현) */}
+      {/* 랜딩 페이지 메인 UI */}
       <div className="flex w-full flex-1 items-center justify-center">
         <div className="w-full max-w-md rounded-3xl border border-white/10 bg-surface/80 p-4 sm:p-8 shadow-surface backdrop-blur-lg">
           <header className="text-center">

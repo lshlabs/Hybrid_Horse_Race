@@ -29,6 +29,8 @@ interface PhaserGameProps {
   aspectRatioHeight?: number // 게임 높이 (고정 크기, 기본값: 720)
   roomId?: string // Firebase 룸 ID
   playerId?: string // 플레이어 ID
+  sessionToken?: string
+  roomJoinToken?: string | null
   room?: Room // Firebase 룸 데이터
   players?: Player[] // 플레이어 목록
   selectedHorse?: SelectedHorseData // 개발 모드: 선택한 말 데이터
@@ -45,6 +47,8 @@ export function PhaserGame({
   aspectRatioHeight = 720,
   roomId,
   playerId,
+  sessionToken,
+  roomJoinToken,
   room,
   players = [],
   selectedHorse,
@@ -130,6 +134,8 @@ export function PhaserGame({
       // Scene data 저장소 경로(초기화/재진입 모두 안전)
       raceScene.data.set('roomId', roomId)
       raceScene.data.set('playerId', playerId)
+      raceScene.data.set('sessionToken', sessionToken)
+      raceScene.data.set('roomJoinToken', roomJoinToken)
       raceScene.data.set('room', room)
       raceScene.data.set('players', players)
 
@@ -142,6 +148,8 @@ export function PhaserGame({
       raceScene.events.emit('room-data-updated', {
         roomId,
         playerId,
+        sessionToken,
+        roomJoinToken,
         room,
         players,
         selectedHorse,
@@ -149,7 +157,7 @@ export function PhaserGame({
     } else if (import.meta.env.DEV) {
       console.warn('[PhaserGame] RaceScene not found. Scene may not be initialized yet.')
     }
-  }, [roomId, playerId, room, players, selectedHorse])
+  }, [roomId, playerId, sessionToken, roomJoinToken, room, players, selectedHorse])
 
   // 부모 컨테이너 크기에 맞춰 캔버스 스케일 계산
   useEffect(() => {

@@ -1,6 +1,8 @@
 import Phaser from 'phaser'
 
 type FinishSequenceOptions = {
+  enableSlowmo?: boolean
+  enableCameraZoom?: boolean
   slowmoScale?: number
   slowmoRestoreMs?: number
   zoomFactor?: number
@@ -10,14 +12,13 @@ type FinishSequenceOptions = {
   shakeIntensity?: number
   confettiBursts?: number
   confettiCount?: number
-  winSoundKey?: string
-  /** FINISH 배너·파티클 연출이 끝난 직후 호출 */
+  /** FINISH 배너/파티클 연출이 끝난 직후 호출 */
   onComplete?: () => void
 }
 
 const CONFETTI_TEXTURE_KEY = 'confetti-dot'
 
-/** 파티클용 원형 텍스처를 1회만 생성한다. */
+/** 컨페티 파티클용 점 텍스처를 한 번만 만든다. */
 function ensureConfettiTexture(scene: Phaser.Scene) {
   if (scene.textures.exists(CONFETTI_TEXTURE_KEY)) return
 
@@ -29,19 +30,9 @@ function ensureConfettiTexture(scene: Phaser.Scene) {
   gfx.destroy()
 }
 
-/** 사운드 리소스가 있을 때만 안전하게 재생한다. */
-function tryPlayWinSfx(scene: Phaser.Scene, key: string) {
-  if (!scene.sound || !scene.cache.audio.exists(key)) return
-  try {
-    scene.sound.play(key, { volume: 0.7 })
-  } catch {
-    // If sound fails, do nothing.
-  }
-}
-
 /**
- * 결승 순간 연출(슬로모, 카메라 줌, 배너, 컨페티)을 순서대로 실행한다.
- * 실제 시뮬레이션 속도 제어는 Scene 이벤트(`finish-sequence-*`)를 통해 RaceScene이 처리한다.
+ * 결승 순간 연출(슬로모/카메라/배너/컨페티)을 순서대로 실행한다.
+ * 실제 시뮬레이션 속도는 여기서 직접 바꾸지 않고 RaceScene 이벤트로 요청만 보낸다.
  */
 export function playFinishSequence(
   scene: Phaser.Scene,
@@ -49,6 +40,8 @@ export function playFinishSequence(
   opts: FinishSequenceOptions = {},
 ) {
   const slowmoScale = opts.slowmoScale ?? 0.2
+  const enableSlowmo = opts.enableSlowmo ?? true
+  const enableCameraZoom = opts.enableCameraZoom ?? true
   const slowmoRestoreMs = opts.slowmoRestoreMs ?? 800
   const zoomFactor = opts.zoomFactor ?? 1.35
   const zoomInMs = opts.zoomInMs ?? 900
@@ -57,21 +50,21 @@ export function playFinishSequence(
   const shakeIntensity = opts.shakeIntensity ?? 0.002
   const confettiBursts = opts.confettiBursts ?? 3
   const confettiCount = opts.confettiCount ?? 70
-  const winSoundKey = opts.winSoundKey ?? 'win'
   const onComplete = opts.onComplete
 
   const cam = scene.cameras.main
   const baseZoom = cam.zoom
 
-  // 슬로모는 렌더 루프가 아닌 시뮬레이션 속도만 조절한다.
-  scene.events.emit('finish-sequence-slowmo', slowmoScale, slowmoRestoreMs)
+  if (enableSlowmo) {
+    // 슬로모는 화면 렌더 자체가 아니라 시뮬레이션 재생 속도만 바꾸도록 이벤트로 요청한다.
+    scene.events.emit('finish-sequence-slowmo', slowmoScale, slowmoRestoreMs)
+    scene.events.once('finish-sequence-slowmo-restore', () => {
+      scene.events.emit('finish-sequence-slowmo-end')
+    })
+  }
 
-  scene.events.once('finish-sequence-slowmo-restore', () => {
-    scene.events.emit('finish-sequence-slowmo-end')
-  })
-
-  let zoomOutDone = false
-  let slowmoDone = false
+  let zoomOutDone = !enableCameraZoom
+  let slowmoDone = !enableSlowmo
   let postEffectsRun = false
 
   const runPostEffects = () => {
@@ -147,50 +140,53 @@ export function playFinishSequence(
         })
       },
     })
-
-    // 3) 사운드(선택)
-    tryPlayWinSfx(scene, winSoundKey)
   }
 
-  // 카메라 연출: 줌인 -> 결승 통과 이벤트 후 줌아웃
-  if (target && (target as Phaser.GameObjects.Sprite).x !== undefined) {
-    cam.pan((target as Phaser.GameObjects.Sprite).x, (target as Phaser.GameObjects.Sprite).y, 200)
-  }
-  cam.shake(shakeMs, shakeIntensity)
+  // 카메라 연출: 줌인 -> 결승 통과 이벤트를 받으면 줌아웃
+  if (enableCameraZoom) {
+    if (target && (target as Phaser.GameObjects.Sprite).x !== undefined) {
+      cam.pan((target as Phaser.GameObjects.Sprite).x, (target as Phaser.GameObjects.Sprite).y, 200)
+    }
+    cam.shake(shakeMs, shakeIntensity)
 
-  let zoomOutStarted = false
-  const startZoomOut = () => {
-    if (zoomOutStarted) return
-    zoomOutStarted = true
+    let zoomOutStarted = false
+    const startZoomOut = () => {
+      if (zoomOutStarted) return
+      zoomOutStarted = true
 
-    scene.tweens.add({
+      scene.tweens.add({
+        targets: cam,
+        zoom: baseZoom,
+        duration: zoomOutMs,
+        ease: 'Sine.InOut',
+        onComplete: () => {
+          zoomOutDone = true
+          runPostEffects()
+        },
+      })
+    }
+
+    const zoomInTween = scene.tweens.add({
       targets: cam,
-      zoom: baseZoom,
-      duration: zoomOutMs,
-      ease: 'Sine.InOut',
-      onComplete: () => {
-        zoomOutDone = true
-        runPostEffects()
-      },
+      zoom: baseZoom * zoomFactor,
+      duration: zoomInMs,
+      ease: 'Sine.Out',
+    })
+
+    scene.events.once('finish-sequence-horse-crossed', () => {
+      zoomInTween.stop()
+      startZoomOut()
     })
   }
 
-  const zoomInTween = scene.tweens.add({
-    targets: cam,
-    zoom: baseZoom * zoomFactor,
-    duration: zoomInMs,
-    ease: 'Sine.Out',
-  })
+  if (enableSlowmo) {
+    const onSlowmoEnd = () => {
+      slowmoDone = true
+      runPostEffects()
+    }
 
-  scene.events.once('finish-sequence-horse-crossed', () => {
-    zoomInTween.stop()
-    startZoomOut()
-  })
-
-  const onSlowmoEnd = () => {
-    slowmoDone = true
-    runPostEffects()
+    scene.events.once('finish-sequence-slowmo-end', onSlowmoEnd)
   }
 
-  scene.events.once('finish-sequence-slowmo-end', onSlowmoEnd)
+  runPostEffects()
 }

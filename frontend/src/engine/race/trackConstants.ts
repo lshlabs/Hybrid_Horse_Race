@@ -1,22 +1,23 @@
 // =========================
-// 트랙·좌표·오프셋 상수 (맵/진행률/연출용)
-// 밸런스 상수는 constants.ts 참고.
+// 트랙 길이/좌표/오프셋 관련 상수
+// (맵 표시, 진행률 계산, 연출에서 사용)
+// 밸런스 수치는 다른 constants 파일 참고
 // =========================
 
 /**
- * 트랙 설정
- * - raceTiles: S~E 사이 T 타일 개수. TileMapManager.getRaceTiles().
- * - 실제 달리는 거리 = [S]1 + [T]×raceTiles = (raceTiles+1) 타일.
- * - 트랙 길이(m): (raceTiles+1)×METERS_PER_TILE_M. TileMapManager.getTrackLengthM().
+ * 트랙 길이 계산 기준
+ * - raceTiles: S~E 사이에 들어가는 T 타일 개수
+ * - 실제 달리는 거리: (raceTiles+1) 타일
+ * - 트랙 길이(m): (raceTiles+1) * METERS_PER_TILE_M
  *
- * m(미터) vs px(픽셀) 역할·변환: docs/meters-vs-pixels.md 참고.
+ * m / px 변환 개념은 docs/meters-vs-pixels.md 참고
  */
-/** 기본 raceTiles (시뮬레이터 등 raceTiles 미지정 시 사용) */
+/** 기본 raceTiles 값 (별도 값 안 넣었을 때 사용) */
 export const DEFAULT_RACE_TILES_COUNT = 100
-/** 타일당 미터. 트랙 길이(m) = (raceTiles+1) × METERS_PER_TILE_M (getTrackLengthM, S왼쪽~E왼쪽) */
+/** 타일 1칸을 몇 m로 볼지 정하는 값 */
 export const METERS_PER_TILE_M = 5
 /**
- * 오프셋/매직넘버 일람 (위치·연출 관련)
+ * 위치/연출에서 쓰는 오프셋 값 정리
  * | 이름                         | 단위 | 값(또는 공식)        | 용도                     | 정의 위치        |
  * |------------------------------|------|----------------------|--------------------------|------------------|
  * | getFinishLineOffsetM()       | m    | 0 (오프셋 없음)      | 레거시/호환용, 시뮬은 position≥trackLengthM | TileMapManager   |

@@ -1,14 +1,9 @@
 /**
- * 개발용 레이스 최종 결과 페이지 테스트
- * Firebase 없이도 최종 결과 페이지를 테스트할 수 있습니다.
- *
- * 사용법:
- * 1. 개발 서버 실행: npm run dev
- * 2. 브라우저에서 /race-result 접근
- * 3. 최종 결과 페이지 테스트 (Mock 데이터 사용)
+ * 개발용 최종 결과 페이지
+ * 서버에서 넘어온 결과가 없을 때도 화면과 점수 계산을 확인할 수 있게 만든다.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Trophy, Home } from 'lucide-react'
@@ -17,6 +12,7 @@ import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { generateNickname } from '../utils/nickname-generator'
 import clsx from 'clsx'
+import { useRoom } from '../hooks/useRoom'
 
 interface RoundResult {
   rank: number
@@ -36,23 +32,24 @@ interface FinalRanking {
 interface LocationState {
   roundResults?: Array<Array<RoundResult>>
   playerCount?: number
-  finalRankings?: FinalRanking[] // fallback용 (이전 버전 호환)
+  finalRankings?: FinalRanking[] // 예전 전달 방식도 잠깐 같이 받기 위한 fallback
   roomId?: string
   playerId?: string
   playerName?: string
 }
 
 /**
- * 라운드 결과로부터 최종 순위 계산
+ * 라운드 결과로 최종 순위를 계산한다.
+ * 총점이 같으면 순위 횟수(1등 횟수, 2등 횟수...)로 다시 비교한다.
  */
 function calculateFinalRankings(
   roundResults: Array<Array<RoundResult>>,
   playerCount: number,
 ): FinalRanking[] {
-  // 플레이어별 총 점수 계산
-  // 점수 체계: N명이 뛰면 1등=N점, 2등=N-1점, ..., 꼴찌=1점
+  // 플레이어별 총점과 순위 횟수를 같이 모아둔다.
+  // 점수는 인원수 기준이라 1등이 가장 높은 점수를 받는다.
   const playerScores: Record<string, number> = {}
-  const playerRankCounts: Record<string, Record<number, number>> = {} // 각 플레이어의 순위별 횟수
+  const playerRankCounts: Record<string, Record<number, number>> = {} // 동점 비교할 때 사용
 
   roundResults.forEach((round) => {
     round.forEach((result) => {
@@ -61,11 +58,11 @@ function calculateFinalRankings(
         playerRankCounts[result.name] = {}
       }
 
-      // 순위에 따른 점수 부여: 1등=playerCount점, 2등=playerCount-1점, ..., 꼴찌=1점
+      // 순위 점수 계산
       const score = playerCount - result.rank + 1
       playerScores[result.name] += score
 
-      // 순위별 횟수 카운트
+      // 동점 처리용으로 순위 횟수도 같이 카운트한다.
       if (!playerRankCounts[result.name][result.rank]) {
         playerRankCounts[result.name][result.rank] = 0
       }
@@ -73,7 +70,7 @@ function calculateFinalRankings(
     })
   })
 
-  // 최종 순위 계산
+  // 최종 순위 정렬
   const finalRankings = Object.keys(playerScores)
     .map((name) => {
       const lastRoundRank =
@@ -86,22 +83,22 @@ function calculateFinalRankings(
       }
     })
     .sort((a, b) => {
-      // 1. 총 점수 높은 순
+      // 1) 총점 높은 순
       if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore
 
-      // 2. 동점이면 1등 횟수 비교
+      // 2) 동점이면 1등 횟수 비교
       const aFirstCount = a.rankCounts[1] || 0
       const bFirstCount = b.rankCounts[1] || 0
       if (bFirstCount !== aFirstCount) return bFirstCount - aFirstCount
 
-      // 3. 같으면 2등 횟수, 그다음 3등 횟수... (더 높은 순위를 더 많이 한 쪽)
+      // 3) 그래도 같으면 2등, 3등... 순서대로 많이 한 쪽 우선
       for (let rank = 2; rank <= playerCount; rank++) {
         const aCount = a.rankCounts[rank] || 0
         const bCount = b.rankCounts[rank] || 0
         if (bCount !== aCount) return bCount - aCount
       }
 
-      // 4. 그래도 같으면 마지막 세트 순위가 더 높은 사람
+      // 4) 끝까지 같으면 마지막 세트 성적 비교
       return a.lastRoundRank - b.lastRoundRank
     })
     .map((result, index) => ({
@@ -115,13 +112,14 @@ function calculateFinalRankings(
 }
 
 /**
- * Mock 라운드 결과 데이터 생성 (nickname-generator 사용)
+ * Mock 라운드 결과 생성
+ * 개발용으로 state 데이터가 없을 때도 결과 화면을 볼 수 있게 한다.
  */
 function createMockRoundResults(
   playerCount: number = 4,
   roundCount: number = 3,
 ): Array<Array<RoundResult>> {
-  // 랜덤 닉네임 생성
+  // 이름은 먼저 만들고, 라운드마다 순위만 섞는다.
   const playerNames = Array.from({ length: playerCount }, () => generateNickname())
   const roundResults: Array<Array<RoundResult>> = []
 
@@ -150,14 +148,55 @@ export function RaceResultPage() {
   const [searchParams] = useSearchParams()
   const isDev = true
 
-  // location.state에서 전달된 데이터 확인 (RacePageTest에서 전달된 경우)
+  // RacePage에서 넘겨준 결과 데이터가 있으면 그걸 먼저 사용한다.
   const state = location.state as LocationState | null
   const roundResultsFromState = state?.roundResults
   const playerCountFromState = state?.playerCount
-  const currentPlayerName = state?.playerName // 하이라이트용
-  const roomId = state?.roomId || searchParams.get('roomId') || 'test-room-123'
+  const currentPlayerName = state?.playerName // 내 결과 행 강조용
+  const roomId = state?.roomId ?? searchParams.get('roomId') ?? null
+  const playerId =
+    state?.playerId ?? searchParams.get('playerId') ?? localStorage.getItem('dev_player_id') ?? ''
+  const { room, loading } = useRoom(roomId)
+  const hasFinalResultPayload =
+    !!(state?.roundResults && state.roundResults.length > 0) ||
+    !!(state?.finalRankings && state.finalRankings.length > 0)
 
-  // 게임 설정을 localStorage에서 가져오기
+  const navigateWithRoomAndPlayer = (pathname: '/lobby' | '/horse-selection' | '/race') => {
+    const params = new URLSearchParams({ roomId: roomId ?? '', playerId })
+    navigate(`${pathname}?${params.toString()}`, { replace: true })
+  }
+
+  const shouldStayOnResultPageForSetResult = (): boolean => {
+    return room?.status === 'setResult' && hasFinalResultPayload
+  }
+
+  const handleRoomStatusRedirect = () => {
+    if (!room) return
+
+    if (room.status === 'waiting') {
+      navigateWithRoomAndPlayer('/lobby')
+      return
+    }
+
+    if (room.status === 'horseSelection') {
+      navigateWithRoomAndPlayer('/horse-selection')
+      return
+    }
+
+    if (shouldStayOnResultPageForSetResult()) {
+      return
+    }
+
+    if (
+      room.status === 'augmentSelection' ||
+      room.status === 'racing' ||
+      room.status === 'setResult'
+    ) {
+      navigateWithRoomAndPlayer('/race')
+    }
+  }
+
+  // 개발용 페이지라 room 설정이 없을 때를 대비해서 localStorage 기본값도 같이 본다.
   const roomConfig = (() => {
     try {
       const saved = localStorage.getItem('dev_room_config')
@@ -167,7 +206,7 @@ export function RaceResultPage() {
     } catch (err) {
       console.warn('[RaceResultPageTest] Failed to load room config from localStorage:', err)
     }
-    // 기본값
+    // 저장된 값이 없거나 읽기 실패하면 기본값 사용
     return {
       playerCount: 4,
       roundCount: 3,
@@ -176,31 +215,38 @@ export function RaceResultPage() {
   })()
 
   const playerCount = playerCountFromState || roomConfig.playerCount
-  const roundCount = roomConfig.roundCount
+  const roundCount = room?.roundCount ?? roomConfig.roundCount
 
-  // 최종 순위 계산 (라운드 결과로부터)
-  const [finalRankings] = useState<FinalRanking[]>(() => {
-    // 1. roundResults가 있으면 최종 순위 계산
+  useEffect(() => {
+    if (!roomId) {
+      navigate('/', { replace: true })
+      return
+    }
+    if (!loading && !room) {
+      navigate('/', { replace: true })
+      return
+    }
+    handleRoomStatusRedirect()
+  }, [hasFinalResultPayload, loading, navigate, playerId, room, roomId])
+
+  const buildInitialFinalRankings = (): FinalRanking[] => {
     if (roundResultsFromState && roundResultsFromState.length > 0) {
       return calculateFinalRankings(roundResultsFromState, playerCount)
     }
 
-    // 2. fallback: 이전 버전 호환 (finalRankings 직접 전달)
     if (state?.finalRankings && state.finalRankings.length > 0) {
       return state.finalRankings
     }
 
-    // 3. Mock 데이터 생성 (직접 접근 또는 테스트 목적)
     console.warn('[RaceResultPageTest] No roundResults in location.state, using mock data')
     const mockRoundResults = createMockRoundResults(playerCount, roundCount)
     return calculateFinalRankings(mockRoundResults, playerCount)
-  })
-  const [isBannerCollapsed, setIsBannerCollapsed] = useState(true)
+  }
 
-  // Mock 데이터 사용 여부 표시
-  const isUsingMockData = !roundResultsFromState && !state?.finalRankings
+  // 최종 순위는 첫 렌더에서 한 번만 계산해서 고정한다.
+  const [finalRankings] = useState<FinalRanking[]>(buildInitialFinalRankings)
 
-  // 개발 모드 확인
+  // 개발용 페이지라서 일반 동선에서는 막아둔다.
   if (!isDev) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-gray-900">
@@ -211,7 +257,7 @@ export function RaceResultPage() {
     )
   }
 
-  // 순위 색상
+  // 순위 숫자 색상만 간단히 분리
   const getRankColor = (rank: number) => {
     if (rank === 1) return 'text-yellow-400'
     if (rank === 2) return 'text-gray-300'
@@ -222,68 +268,7 @@ export function RaceResultPage() {
   return (
     <div className="container mx-auto min-h-screen px-0 sm:px-4 py-8">
       <div className="mx-auto max-w-6xl">
-        {/* 개발용 컨트롤 패널 */}
-        {isBannerCollapsed ? (
-          /* 접었을 때: 펼치기 버튼만 표시 */
-          <button
-            onClick={() => setIsBannerCollapsed(false)}
-            className="fixed top-2 left-2 z-50 rounded-lg bg-black/80 px-3 py-2 text-white backdrop-blur-sm transition hover:bg-black/90 shadow-lg"
-            aria-label="배너 펼치기"
-          >
-            <span className="text-sm">▼ 개발 배너</span>
-          </button>
-        ) : (
-          /* 펼쳤을 때: 전체 배너 표시 */
-          <div className="fixed top-0 left-0 right-0 z-50 bg-black/80 p-4 text-white">
-            <div className="mx-auto max-w-7xl">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold">🧪 최종 결과 페이지 테스트 모드</h2>
-                <button
-                  onClick={() => setIsBannerCollapsed(true)}
-                  className="ml-4 rounded bg-gray-700/50 px-3 py-1 text-sm transition hover:bg-gray-700/70"
-                  aria-label="배너 접기"
-                >
-                  ▲
-                </button>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-4 text-sm">
-                <div>
-                  <span className="text-gray-400">플레이어 수: </span>
-                  <span className="font-mono">{playerCount}명</span>
-                </div>
-                <div>
-                  <span className="text-gray-400">라운드 수: </span>
-                  <span className="font-mono">{roundCount}</span>
-                </div>
-                <div>
-                  <span className="text-gray-400">Room ID: </span>
-                  <span className="font-mono">{roomId}</span>
-                </div>
-                {isUsingMockData && (
-                  <div className="rounded bg-yellow-600/20 px-3 py-1 border border-yellow-500/40">
-                    <span className="text-yellow-400">⚠️ Mock 데이터 사용 중</span>
-                  </div>
-                )}
-                <button
-                  onClick={() => {
-                    window.location.reload()
-                  }}
-                  className="rounded bg-blue-600 px-3 py-1 text-sm hover:bg-blue-700"
-                >
-                  🔄 데이터 새로고침
-                </button>
-                <button
-                  onClick={() => navigate('/')}
-                  className="rounded bg-blue-600 px-3 py-1 text-sm hover:bg-blue-700"
-                >
-                  🔄 처음부터 다시 테스트
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 헤더 */}
+        {/* 결과 헤더 */}
         <div className="mb-6 text-center">
           <div className="mb-3 flex justify-center">
             <Trophy className="h-12 w-12 sm:h-16 sm:w-16 text-yellow-400" />
@@ -296,7 +281,7 @@ export function RaceResultPage() {
           </p>
         </div>
 
-        {/* 상세 결과 테이블 */}
+        {/* 최종 순위 + 라운드별 기록 테이블 */}
         <NeonCard accent="primary" className="mb-6">
           <div className="overflow-x-auto -mx-4 sm:mx-0">
             <table className="w-full text-[10px] sm:text-sm md:text-base">
@@ -390,7 +375,7 @@ export function RaceResultPage() {
           </div>
         </NeonCard>
 
-        {/* 액션 버튼 */}
+        {/* 홈으로 돌아가기 버튼 */}
         <div className="flex justify-center gap-4">
           <Button onClick={() => navigate('/')} variant="outline" size="lg">
             <Home className="mr-2 h-4 w-4" />
