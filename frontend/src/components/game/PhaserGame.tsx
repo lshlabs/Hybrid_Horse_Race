@@ -37,14 +37,45 @@ interface PhaserGameProps {
 }
 
 type DevWindow = Window & { __phaserGame?: Phaser.Game }
+const DEFAULT_ASPECT_RATIO_WIDTH = 1280
+const DEFAULT_ASPECT_RATIO_HEIGHT = 720
+const PORTRAIT_OVERLAY_BREAKPOINT = 1
+const RACE_SCENE_KEY = 'RaceScene'
+const ROOM_DATA_UPDATED_EVENT = 'room-data-updated'
+const RESIZE_EVENT = 'resize'
+const ORIENTATION_CHANGE_EVENT = 'orientationchange'
+const SCREEN_ORIENTATION_CHANGE_EVENT = 'change'
+const RACE_SCENE_MISSING_WARNING =
+  '[PhaserGame] RaceScene not found. Scene may not be initialized yet.'
+
+function applyPixelRendering(el: HTMLCanvasElement): void {
+  el.style.imageRendering = 'pixelated'
+  el.style.imageRendering = 'crisp-edges'
+}
+
+function isPortraitMode(): boolean {
+  return window.innerHeight > window.innerWidth * PORTRAIT_OVERLAY_BREAKPOINT
+}
+
+function addOrientationListener(handler: () => void): void {
+  if ('orientation' in screen && 'addEventListener' in screen.orientation) {
+    screen.orientation.addEventListener(SCREEN_ORIENTATION_CHANGE_EVENT, handler)
+  }
+}
+
+function removeOrientationListener(handler: () => void): void {
+  if ('orientation' in screen && 'removeEventListener' in screen.orientation) {
+    screen.orientation.removeEventListener(SCREEN_ORIENTATION_CHANGE_EVENT, handler)
+  }
+}
 
 /**
  * Phaser 인스턴스 생성/파괴와 React 상태(레이아웃, room 데이터)를 연결한다.
  * 게임 내부 로직은 각 Scene에서 처리하고, 이 컴포넌트는 "호스트 컨테이너" 역할만 맡는다.
  */
 export function PhaserGame({
-  aspectRatioWidth = 1280,
-  aspectRatioHeight = 720,
+  aspectRatioWidth = DEFAULT_ASPECT_RATIO_WIDTH,
+  aspectRatioHeight = DEFAULT_ASPECT_RATIO_HEIGHT,
   roomId,
   playerId,
   sessionToken,
@@ -91,11 +122,6 @@ export function PhaserGame({
     // 인스턴스 생성은 1회만 수행
     gameRef.current = new Phaser.Game(config)
 
-    // 확대 시 글씨 흐림 방지: 캔버스에 픽셀 보간 강제
-    const applyPixelRendering = (el: HTMLCanvasElement) => {
-      el.style.imageRendering = 'pixelated'
-      el.style.imageRendering = 'crisp-edges'
-    }
     const canvas = gameRef.current.canvas
     if (canvas) {
       applyPixelRendering(canvas)
@@ -129,7 +155,7 @@ export function PhaserGame({
   useEffect(() => {
     if (!gameRef.current) return
 
-    const raceScene = gameRef.current.scene.getScene('RaceScene') as RaceScene | null
+    const raceScene = gameRef.current.scene.getScene(RACE_SCENE_KEY) as RaceScene | null
     if (raceScene) {
       // Scene data 저장소 경로(초기화/재진입 모두 안전)
       raceScene.data.set('roomId', roomId)
@@ -145,7 +171,7 @@ export function PhaserGame({
       }
 
       // 실행 중 Scene 즉시 반영용 이벤트 경로
-      raceScene.events.emit('room-data-updated', {
+      raceScene.events.emit(ROOM_DATA_UPDATED_EVENT, {
         roomId,
         playerId,
         sessionToken,
@@ -155,7 +181,7 @@ export function PhaserGame({
         selectedHorse,
       })
     } else if (import.meta.env.DEV) {
-      console.warn('[PhaserGame] RaceScene not found. Scene may not be initialized yet.')
+      console.warn(RACE_SCENE_MISSING_WARNING)
     }
   }, [roomId, playerId, sessionToken, roomJoinToken, room, players, selectedHorse])
 
@@ -179,14 +205,14 @@ export function PhaserGame({
     updateScale()
 
     // 리사이즈 이벤트 리스너
-    window.addEventListener('resize', updateScale)
+    window.addEventListener(RESIZE_EVENT, updateScale)
     const resizeObserver = new ResizeObserver(updateScale)
     if (wrapperRef.current) {
       resizeObserver.observe(wrapperRef.current)
     }
 
     return () => {
-      window.removeEventListener('resize', updateScale)
+      window.removeEventListener(RESIZE_EVENT, updateScale)
       resizeObserver.disconnect()
     }
   }, [aspectRatioWidth, aspectRatioHeight])
@@ -194,29 +220,21 @@ export function PhaserGame({
   // 화면 방향 감지 (세로/가로)
   useEffect(() => {
     const checkOrientation = () => {
-      // 화면이 세로 모드인지 확인 (높이가 너비보다 큰 경우)
-      const isPortraitMode = window.innerHeight > window.innerWidth
-      setIsPortrait(isPortraitMode)
+      setIsPortrait(isPortraitMode())
     }
 
     // 초기 확인
     checkOrientation()
 
     // 리사이즈 및 방향 변경 감지
-    window.addEventListener('resize', checkOrientation)
-    window.addEventListener('orientationchange', checkOrientation)
-
-    // Screen Orientation API 사용 (지원되는 경우)
-    if ('orientation' in screen && 'addEventListener' in screen.orientation) {
-      screen.orientation.addEventListener('change', checkOrientation)
-    }
+    window.addEventListener(RESIZE_EVENT, checkOrientation)
+    window.addEventListener(ORIENTATION_CHANGE_EVENT, checkOrientation)
+    addOrientationListener(checkOrientation)
 
     return () => {
-      window.removeEventListener('resize', checkOrientation)
-      window.removeEventListener('orientationchange', checkOrientation)
-      if ('orientation' in screen && 'removeEventListener' in screen.orientation) {
-        screen.orientation.removeEventListener('change', checkOrientation)
-      }
+      window.removeEventListener(RESIZE_EVENT, checkOrientation)
+      window.removeEventListener(ORIENTATION_CHANGE_EVENT, checkOrientation)
+      removeOrientationListener(checkOrientation)
     }
   }, [])
 

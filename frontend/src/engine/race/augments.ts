@@ -38,6 +38,10 @@ const AUGMENT_RARITY_WEIGHTS: Record<AugmentRarity, number> = {
 const ALL_STAT_TYPES: AugmentStatType[] = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Luck']
 // 히든 특수 능력 값 범위를 한 곳에 모아두면 나중에 밸런스 조정할 때 보기 쉽다.
 const HIDDEN_SPECIAL_ABILITY_VALUE_RANGE = { min: 6, max: 10 } as const
+const AUGMENT_CHOICES_COUNT = 3
+const LEGENDARY_HIDDEN_LAST_SPURT_THRESHOLD = 0.05
+const LEGENDARY_HIDDEN_OVERTAKE_THRESHOLD = 0.1
+const LEGENDARY_HIDDEN_ESCAPE_CRISIS_THRESHOLD = 0.15
 
 /**
  * 랜덤 정수 생성 (min ~ max)
@@ -123,7 +127,7 @@ export function createAugment(
   const name = `${statName} +${value}` // 등급은 카드 색상으로 보여줘서 이름은 단순하게 둔다.
 
   return {
-    id: `${rarity}-${statType}-${value}-${Date.now()}-${Math.random()}`,
+    id: buildAugmentId(String(statType), rarity, value),
     name,
     rarity,
     statType,
@@ -175,12 +179,12 @@ export function generateAugmentChoices(rarity: AugmentRarity): Augment[] {
   if (rarity === 'legendary') {
     // 전설 카드 중 일부만 히든 특수 능력으로 바꿔준다.
     const roll = Math.random()
-    if (roll < 0.05) {
+    if (roll < LEGENDARY_HIDDEN_LAST_SPURT_THRESHOLD) {
       // 각 구간이 5%씩이라 특수 능력 3종 확률이 같다.
       choices.push(createLastSpurtAugment())
-    } else if (roll < 0.1) {
+    } else if (roll < LEGENDARY_HIDDEN_OVERTAKE_THRESHOLD) {
       choices.push(createOvertakeAugment())
-    } else if (roll < 0.15) {
+    } else if (roll < LEGENDARY_HIDDEN_ESCAPE_CRISIS_THRESHOLD) {
       choices.push(createEscapeCrisisAugment())
     }
   }
@@ -188,7 +192,7 @@ export function generateAugmentChoices(rarity: AugmentRarity): Augment[] {
   const availableStats = [...ALL_STAT_TYPES]
 
   // 남은 칸은 일반 능력치 증강으로 채운다.
-  while (choices.length < 3) {
+  while (choices.length < AUGMENT_CHOICES_COUNT) {
     // 후보가 다 떨어지면 다시 채워서 중복도 허용한다.
     if (availableStats.length === 0) {
       availableStats.push(...ALL_STAT_TYPES)

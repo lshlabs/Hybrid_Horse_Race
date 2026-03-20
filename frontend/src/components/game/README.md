@@ -11,7 +11,10 @@
 - `scenes/`
   - Phaser Scene 모음
   - `race/` 레이스 진행 씬
+    - `controllers/` 레이스 상태/동기화/화면 흐름 분리 모듈
+    - `helpers/` 대기/디버그/결과복구 등 순수 헬퍼
   - `augment/` 증강 선택 씬
+    - `modules/` 룰렛/카드 렌더러 등 UI 모듈
   - `result/` 레이스 결과 오버레이 씬
 - `managers/`
   - 씬 내부 기능 분리(카메라, HUD, 말, 맵 등)
@@ -28,4 +31,5 @@ React → `PhaserGame.tsx` → `RaceScene`(필요 시 다른 씬으로 확장)
 ## 권장 원칙
 
 - Scene은 흐름 제어만, 화면 요소는 Manager로 분리
+- 상태 전이 분기는 `controllers/` 또는 `helpers/`로 분리
 - 에셋 로딩은 Scene 또는 공용 LoaderScene으로 통합

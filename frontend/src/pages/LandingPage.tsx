@@ -1,8 +1,3 @@
-/**
- * 랜딩 페이지
- * 실서비스 Firebase 호출을 우선 쓰고, 개발 설정일 때만 mock fallback을 허용한다.
- */
-
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -20,17 +15,25 @@ const MAX_PLAYER_COUNT = 8
 
 const MIN_REROLL_COUNT = 0
 const MAX_REROLL_COUNT = 5
+const DEFAULT_PLAYER_COUNT = 4
+const DEFAULT_ROUND_COUNT = 3
+const DEFAULT_REROLL_COUNT = 3
+const CREATE_ROOM_TITLE_PREFIX = 'Hybrid Horse Race'
 const ENABLE_MOCK_ROOM_FALLBACK =
   import.meta.env.DEV && import.meta.env.VITE_ENABLE_MOCK_ROOM_FALLBACK === 'true'
+
+function buildRoomTitle(): string {
+  return `${CREATE_ROOM_TITLE_PREFIX} (${Date.now()})`
+}
 
 export function LandingPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const isDev = true
+  const isDev = import.meta.env.DEV
 
-  const [playerCount, setPlayerCount] = useState(4)
-  const [roundCount, setRoundCount] = useState(3)
-  const [rerollCount, setRerollCount] = useState(3)
+  const [playerCount, setPlayerCount] = useState(DEFAULT_PLAYER_COUNT)
+  const [roundCount, setRoundCount] = useState(DEFAULT_ROUND_COUNT)
+  const [rerollCount, setRerollCount] = useState(DEFAULT_REROLL_COUNT)
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -47,7 +50,23 @@ export function LandingPage() {
   const decreaseReroll = () => setRerollCount((prev) => Math.max(prev - 1, MIN_REROLL_COUNT))
   const increaseReroll = () => setRerollCount((prev) => Math.min(prev + 1, MAX_REROLL_COUNT))
 
-  // 룸 생성은 Firebase callable을 먼저 시도하고, 개발 설정일 때만 mock으로 넘어간다.
+  const readErrorMessage = (error: unknown): string => {
+    if (error && typeof error === 'object' && 'message' in error) {
+      return String((error as { message?: unknown }).message)
+    }
+    return t('navigation.createFailed')
+  }
+
+  const persistRoomBootstrapData = (playerId: string): void => {
+    const roomConfig = {
+      playerCount,
+      roundCount,
+      rerollLimit: rerollCount,
+    }
+    localStorage.setItem('dev_room_config', JSON.stringify(roomConfig))
+    localStorage.setItem('dev_player_id', playerId)
+  }
+
   const handleCreateRoom = async () => {
     if (isCreating) return
 
@@ -63,7 +82,7 @@ export function LandingPage() {
             playerId: session.guestId,
             sessionToken: session.sessionToken,
             hostName: resolvePlayerDisplayName(session.guestId),
-            title: `Hybrid Horse Race (${Date.now()})`,
+            title: buildRoomTitle(),
             maxPlayers: playerCount,
             roundCount,
             rerollLimit: rerollCount,
@@ -87,35 +106,20 @@ export function LandingPage() {
         }
       })
 
-      // 다음 페이지에서도 같은 설정을 쓰려고 localStorage에 저장해 둔다.
-      const roomConfig = {
-        playerCount,
-        roundCount,
-        rerollLimit: rerollCount,
-      }
-      localStorage.setItem('dev_room_config', JSON.stringify(roomConfig))
-
-      // 현재 게스트 playerId도 저장해 둔다.
-      localStorage.setItem('dev_player_id', playerId)
-
-      // 로비 페이지로 이동할 때 roomId/playerId를 같이 넘긴다.
+      persistRoomBootstrapData(playerId)
       const params = new URLSearchParams({
         roomId: newRoomId,
-        playerId, // playerId 전달 추가
+        playerId,
       })
       navigate(`/lobby?${params.toString()}`)
     } catch (err) {
-      const message =
-        err && typeof err === 'object' && 'message' in err
-          ? String((err as { message?: unknown }).message)
-          : t('navigation.createFailed')
       console.error('Failed to create room:', {
         err,
         playerCount,
         roundCount,
         rerollCount,
       })
-      setError(message)
+      setError(readErrorMessage(err))
     } finally {
       setIsCreating(false)
     }
@@ -133,7 +137,6 @@ export function LandingPage() {
 
   return (
     <div className="flex w-full flex-1 flex-col items-center justify-center">
-      {/* 랜딩 페이지 메인 UI */}
       <div className="flex w-full flex-1 items-center justify-center">
         <div className="w-full max-w-md rounded-3xl border border-white/10 bg-surface/80 p-4 sm:p-8 shadow-surface backdrop-blur-lg">
           <header className="text-center">

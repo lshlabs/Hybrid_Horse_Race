@@ -27,31 +27,27 @@ function RouteLoadingFallback() {
 }
 
 function App() {
+  const topRightControls = (
+    <div className="flex items-center gap-2">
+      <LanguageSwitcher />
+      <PWAInstallButton />
+    </div>
+  )
+
   return (
     <Suspense fallback={<RouteLoadingFallback />}>
       <Routes>
-        {/* RacePage와 RaceResultPage는 AppShell 밖에서 전체 화면 사용 */}
         <Route path="/race" element={<RacePage />} />
         <Route path="/race-result" element={<RaceResultPage />} />
 
-        {/* 나머지 페이지들은 AppShell 안에서 */}
         <Route
           path="/*"
           element={
-            <AppShell
-              topRight={
-                <div className="flex items-center gap-2">
-                  <LanguageSwitcher />
-                  <PWAInstallButton />
-                </div>
-              }
-              footer={<AppFooter />}
-            >
+            <AppShell topRight={topRightControls} footer={<AppFooter />}>
               <Routes>
                 <Route path="/" element={<LandingPage />} />
                 <Route path="/lobby" element={<LobbyPage />} />
                 <Route path="/horse-selection" element={<HorseSelectionPage />} />
-                {/* 개발용 테스트 페이지 (DEV에서만 로드) */}
                 {import.meta.env.DEV ? devTestRouteElements : null}
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>

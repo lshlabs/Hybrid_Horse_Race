@@ -1,5 +1,5 @@
 import type { HTMLAttributes, PropsWithChildren, ReactNode } from 'react'
-import clsx from 'clsx'
+import { cn } from '@/lib/utils'
 
 type NeonCardProps = PropsWithChildren<
   HTMLAttributes<HTMLElement> & {
@@ -16,6 +16,11 @@ const accentRing: Record<NonNullable<NeonCardProps['accent']>, string> = {
   success: 'ring-success/60 shadow-[0_0_42px_rgba(52,211,153,0.35)]',
   warning: 'ring-warning/60 shadow-[0_0_42px_rgba(251,146,60,0.3)]',
 }
+const CARD_BASE_CLASS =
+  'relative overflow-hidden rounded-3xl border border-white/10 bg-surface/80 p-6 ring-1 ring-inset transition duration-300 ease-gentle-in-out'
+const CARD_OVERLAY_CLASS =
+  'pointer-events-none absolute inset-0 bg-gradient-to-br from-white/5 via-transparent to-white/10 opacity-70'
+const CARD_CONTENT_CLASS = 'relative z-10 flex flex-col gap-3'
 
 export function NeonCard({
   title,
@@ -26,16 +31,9 @@ export function NeonCard({
   ...rest
 }: NeonCardProps) {
   return (
-    <section
-      className={clsx(
-        'relative overflow-hidden rounded-3xl border border-white/10 bg-surface/80 p-6 ring-1 ring-inset transition duration-300 ease-gentle-in-out',
-        accentRing[accent],
-        className,
-      )}
-      {...rest}
-    >
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/5 via-transparent to-white/10 opacity-70" />
-      <div className="relative z-10 flex flex-col gap-3">
+    <section className={cn(CARD_BASE_CLASS, accentRing[accent], className)} {...rest}>
+      <div className={CARD_OVERLAY_CLASS} />
+      <div className={CARD_CONTENT_CLASS}>
         {title ? (
           <header className="text-center">
             <h2 className="text-lg font-display uppercase tracking-[0.35em] text-white">{title}</h2>

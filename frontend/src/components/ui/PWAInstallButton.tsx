@@ -6,50 +6,57 @@ import { Button } from './button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './tabs'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './tooltip'
 
+const TOOLTIP_SHOW_DELAY_MS = 500
+const IOS_TAB = 'ios'
+const ANDROID_TAB = 'android'
+const DESKTOP_TAB = 'desktop'
+const PLATFORM_TABS = new Set<PlatformTab>([IOS_TAB, ANDROID_TAB, DESKTOP_TAB])
+
+type PlatformTab = typeof IOS_TAB | typeof ANDROID_TAB | typeof DESKTOP_TAB
+
+function isIOSDevice(): boolean {
+  const userAgent = navigator.userAgent || navigator.vendor
+  const hasMSStream = 'MSStream' in (window as Window & { MSStream?: unknown })
+  return /iPad|iPhone|iPod/.test(userAgent) && !hasMSStream
+}
+
+function isAndroidDevice(): boolean {
+  const userAgent = navigator.userAgent || navigator.vendor
+  return /android/i.test(userAgent)
+}
+
+function getDefaultPlatformTab(): PlatformTab {
+  if (isIOSDevice()) return IOS_TAB
+  if (isAndroidDevice()) return ANDROID_TAB
+  return DESKTOP_TAB
+}
+
+function isPlatformTab(value: string): value is PlatformTab {
+  return PLATFORM_TABS.has(value as PlatformTab)
+}
+
 export function PWAInstallButton() {
   const { t } = useTranslation()
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isTooltipVisible, setIsTooltipVisible] = useState(false)
+  const [activeTab, setActiveTab] = useState<PlatformTab>(getDefaultPlatformTab)
+  const isMobileDevice = isIOSDevice() || isAndroidDevice()
 
-  // 첫 로딩 시 툴팁 애니메이션
+  const handleTabChange = (value: string) => {
+    if (isPlatformTab(value)) {
+      setActiveTab(value)
+    }
+  }
+
   useEffect(() => {
     const timer = setTimeout(() => {
       setIsTooltipVisible(true)
-    }, 500) // 0.5초 후 표시
+    }, TOOLTIP_SHOW_DELAY_MS)
 
     return () => clearTimeout(timer)
   }, [])
 
-  // iOS 감지
-  const isIOS = () => {
-    const userAgent = navigator.userAgent || navigator.vendor
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const win = window as any
-    return /iPad|iPhone|iPod/.test(userAgent) && !win.MSStream
-  }
-
-  // Android 감지
-  const isAndroid = () => {
-    const userAgent = navigator.userAgent || navigator.vendor
-    return /android/i.test(userAgent)
-  }
-
-  // 모바일 환경 감지
-  const isMobile = () => {
-    return isIOS() || isAndroid()
-  }
-
-  // 기본 탭 선택 (현재 플랫폼에 맞게)
-  const getDefaultTab = (): string => {
-    if (isIOS()) return 'ios'
-    if (isAndroid()) return 'android'
-    return 'desktop'
-  }
-
-  const [activeTab, setActiveTab] = useState<string>(getDefaultTab)
-
-  // 모바일이 아니면 버튼을 표시하지 않음
-  if (!isMobile()) {
+  if (!isMobileDevice) {
     return null
   }
 
@@ -75,7 +82,7 @@ export function PWAInstallButton() {
         {/* PWA 설치 가이드 모달 */}
         <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
           <DialogContent className="max-w-md w-[90%] rounded-3xl border-none bg-surface [&>button]:hidden">
-            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger
                   value="ios"

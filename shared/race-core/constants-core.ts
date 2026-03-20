@@ -1,5 +1,8 @@
 // shared race-core에서 서버/클라가 같이 쓰는 기본 상수들
 // (거리, 시뮬레이션 간격, 스탯 계산 범위 등)
+const SECONDS_PER_HOUR = 3600
+const METERS_PER_KILOMETER = 1000
+
 export const DEFAULT_TRACK_LENGTH_M = 155
 export const DEFAULT_SIM_STEP_MS = 50
 export const DEFAULT_OUTPUT_FRAME_MS = 100
@@ -10,7 +13,7 @@ export const SPEED_BONUS_RANGE = 10
 
 export const BASE_STAMINA_COST_PER_M = 0.1
 export const SPEED_STAMINA_COST_PER_M = 0.08
-export const STAMINA_COST_SPEED_CAP_MPS = (60 * 1000) / 3600
+export const STAMINA_COST_SPEED_CAP_MPS = (60 * METERS_PER_KILOMETER) / SECONDS_PER_HOUR
 
 export const POWER_ACCEL_MIN = 0.3
 export const POWER_ACCEL_MAX = 1.5

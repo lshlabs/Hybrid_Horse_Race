@@ -4,6 +4,19 @@
 
 import i18next from 'i18next'
 
+type I18nKey = string
+
+function createI18nRecordProxy<K extends I18nKey>(resolver: (key: K) => string): Record<K, string> {
+  return new Proxy({} as Record<K, string>, {
+    get(_target, prop: string | symbol) {
+      if (typeof prop === 'string') {
+        return resolver(prop as K)
+      }
+      return undefined
+    },
+  })
+}
+
 /**
  * 능력치 이름
  */
@@ -82,17 +95,8 @@ export function getAugmentRarityName(rarity: AugmentRarity): string {
 /**
  * 증강 등급 이름 전체 객체 반환 (호환성 유지)
  */
-export const AUGMENT_RARITY_NAMES: Record<AugmentRarity, string> = new Proxy(
-  {} as Record<AugmentRarity, string>,
-  {
-    get(_target, prop: string | symbol) {
-      if (typeof prop === 'string') {
-        return getAugmentRarityName(prop as AugmentRarity)
-      }
-      return undefined
-    },
-  },
-)
+export const AUGMENT_RARITY_NAMES: Record<AugmentRarity, string> =
+  createI18nRecordProxy(getAugmentRarityName)
 
 /**
  * 증강 타입 (어떤 능력치를 상승시키는지)
@@ -110,17 +114,8 @@ export function getAugmentStatName(statType: AugmentStatType): string {
 /**
  * 증강 능력치 이름 전체 객체 반환 (호환성 유지)
  */
-export const AUGMENT_STAT_NAMES: Record<AugmentStatType, string> = new Proxy(
-  {} as Record<AugmentStatType, string>,
-  {
-    get(_target, prop: string | symbol) {
-      if (typeof prop === 'string') {
-        return getAugmentStatName(prop as AugmentStatType)
-      }
-      return undefined
-    },
-  },
-)
+export const AUGMENT_STAT_NAMES: Record<AugmentStatType, string> =
+  createI18nRecordProxy(getAugmentStatName)
 
 /**
  * 증강 능력치 설명 (i18next 사용)
@@ -133,17 +128,8 @@ export function getAugmentStatDescription(statType: AugmentStatType): string {
 /**
  * 증강 능력치 설명 전체 객체 반환 (호환성 유지)
  */
-export const AUGMENT_STAT_DESCRIPTIONS: Record<AugmentStatType, string> = new Proxy(
-  {} as Record<AugmentStatType, string>,
-  {
-    get(_target, prop: string | symbol) {
-      if (typeof prop === 'string') {
-        return getAugmentStatDescription(prop as AugmentStatType)
-      }
-      return undefined
-    },
-  },
-)
+export const AUGMENT_STAT_DESCRIPTIONS: Record<AugmentStatType, string> =
+  createI18nRecordProxy(getAugmentStatDescription)
 
 /**
  * 특수 능력 타입
@@ -161,17 +147,8 @@ export function getSpecialAbilityName(abilityType: SpecialAbilityType): string {
 /**
  * 특수 능력 이름 전체 객체 반환 (호환성 유지)
  */
-export const SPECIAL_ABILITY_NAMES: Record<SpecialAbilityType, string> = new Proxy(
-  {} as Record<SpecialAbilityType, string>,
-  {
-    get(_target, prop: string | symbol) {
-      if (typeof prop === 'string') {
-        return getSpecialAbilityName(prop as SpecialAbilityType)
-      }
-      return undefined
-    },
-  },
-)
+export const SPECIAL_ABILITY_NAMES: Record<SpecialAbilityType, string> =
+  createI18nRecordProxy(getSpecialAbilityName)
 
 /**
  * 특수 능력 설명 (i18next 사용)
@@ -184,17 +161,8 @@ export function getSpecialAbilityDescription(abilityType: SpecialAbilityType): s
 /**
  * 특수 능력 설명 전체 객체 반환 (호환성 유지)
  */
-export const SPECIAL_ABILITY_DESCRIPTIONS: Record<SpecialAbilityType, string> = new Proxy(
-  {} as Record<SpecialAbilityType, string>,
-  {
-    get(_target, prop: string | symbol) {
-      if (typeof prop === 'string') {
-        return getSpecialAbilityDescription(prop as SpecialAbilityType)
-      }
-      return undefined
-    },
-  },
-)
+export const SPECIAL_ABILITY_DESCRIPTIONS: Record<SpecialAbilityType, string> =
+  createI18nRecordProxy(getSpecialAbilityDescription)
 
 /**
  * 증강 인터페이스

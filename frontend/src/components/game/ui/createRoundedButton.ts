@@ -1,5 +1,16 @@
 import Phaser from 'phaser'
 
+const DEFAULT_TEXT_COLOR = '#ffffff'
+const DEFAULT_FONT_SIZE = '18px'
+const HOVER_SCALE = 1.05
+const DEFAULT_SCALE = 1
+const SCALE_TWEEN_DURATION_MS = 100
+const DISABLED_ALPHA = 0.5
+const BUTTON_FONT_FAMILY = 'NeoDunggeunmo'
+const BUTTON_EVENT_POINTER_OVER = 'pointerover'
+const BUTTON_EVENT_POINTER_OUT = 'pointerout'
+const BUTTON_EVENT_POINTER_DOWN = 'pointerdown'
+
 /**
  * 라운드 버튼 생성 후 외부에서 제어할 수 있는 핸들.
  * - `setEnabled`: 클릭 가능 여부/투명도 동시 제어
@@ -46,9 +57,9 @@ export function createRoundedButton(
     color,
     hoverColor = color,
     label,
-    textColor = '#ffffff',
+    textColor = DEFAULT_TEXT_COLOR,
     onClick,
-    fontSize = '18px',
+    fontSize = DEFAULT_FONT_SIZE,
     scaleOnHover = false,
   } = options
 
@@ -56,7 +67,7 @@ export function createRoundedButton(
   const background = scene.add.graphics()
   const text = scene.add
     .text(0, 0, label, {
-      fontFamily: 'NeoDunggeunmo',
+      fontFamily: BUTTON_FONT_FAMILY,
       fontSize,
       color: textColor,
       fontStyle: 'bold',
@@ -66,54 +77,50 @@ export function createRoundedButton(
     .rectangle(0, 0, width, height, 0x000000, 0)
     .setInteractive({ useHandCursor: true })
 
-  // 상태(hover/disabled)에 따라 버튼 배경색만 바꿀 때 사용한다.
   const redraw = (fillColor: number, alpha = 1) => {
     background.clear()
     background.fillStyle(fillColor, alpha)
     background.fillRoundedRect(-width / 2, -height / 2, width, height, radius)
   }
 
+  const tweenScale = (scale: number) => {
+    scene.tweens.add({
+      targets: container,
+      scaleX: scale,
+      scaleY: scale,
+      duration: SCALE_TWEEN_DURATION_MS,
+    })
+  }
+
   redraw(color)
-  hitArea.on('pointerover', () => {
+  hitArea.on(BUTTON_EVENT_POINTER_OVER, () => {
     redraw(hoverColor)
     if (scaleOnHover) {
-      scene.tweens.add({
-        targets: container,
-        scaleX: 1.05,
-        scaleY: 1.05,
-        duration: 100,
-      })
+      tweenScale(HOVER_SCALE)
     }
   })
-  hitArea.on('pointerout', () => {
+  hitArea.on(BUTTON_EVENT_POINTER_OUT, () => {
     redraw(color)
     if (scaleOnHover) {
-      scene.tweens.add({
-        targets: container,
-        scaleX: 1,
-        scaleY: 1,
-        duration: 100,
-      })
+      tweenScale(DEFAULT_SCALE)
     }
   })
-  hitArea.on('pointerdown', onClick)
+  hitArea.on(BUTTON_EVENT_POINTER_DOWN, onClick)
 
   container.add(background)
   container.add(text)
   container.add(hitArea)
 
-  // 입력 가능 상태와 시각적 상태(alpha)를 함께 전환한다.
   const setEnabled = (enabled: boolean) => {
     if (enabled) {
       hitArea.setInteractive({ useHandCursor: true })
       container.setAlpha(1)
     } else {
       hitArea.disableInteractive()
-      container.setAlpha(0.5)
+      container.setAlpha(DISABLED_ALPHA)
     }
   }
 
-  // 라벨만 갱신해 버튼 재생성 비용을 피한다.
   const setLabel = (nextLabel: string) => {
     text.setText(nextLabel)
   }

@@ -3,8 +3,10 @@ import * as RechartsPrimitive from 'recharts'
 
 import { cn } from '@/lib/utils'
 
-// Format: { THEME_NAME: CSS_SELECTOR }
 const THEMES = { light: '', dark: '.dark' } as const
+const CHART_WRAPPER_CLASS =
+  "flex aspect-video justify-center text-xs [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-cartesian-grid_line[stroke='#ccc']]:stroke-border/50 [&_.recharts-curve.recharts-tooltip-cursor]:stroke-border [&_.recharts-dot[stroke='#fff']]:stroke-transparent [&_.recharts-layer]:outline-none [&_.recharts-polar-grid_[stroke='#ccc']]:stroke-border [&_.recharts-radial-bar-background-sector]:fill-muted [&_.recharts-rectangle.recharts-tooltip-cursor]:fill-muted [&_.recharts-reference-line_[stroke='#ccc']]:stroke-border [&_.recharts-sector[stroke='#fff']]:stroke-transparent [&_.recharts-sector]:outline-none [&_.recharts-surface]:outline-none"
+const HIDDEN_PAYLOAD_TYPE = 'none'
 
 export type ChartConfig = {
   [k in string]: {
@@ -21,6 +23,38 @@ type ChartContextProps = {
 }
 
 const ChartContext = React.createContext<ChartContextProps | null>(null)
+
+function hasRenderableValue(value: unknown): value is string | number | bigint {
+  return value !== null && value !== undefined
+}
+
+function resolveConfigColor(
+  itemConfig: ChartConfig[string],
+  theme: keyof typeof THEMES,
+): string | undefined {
+  return itemConfig.theme?.[theme] ?? itemConfig.color
+}
+
+function createChartCssVariables(id: string, config: ChartConfig): string {
+  const colorConfig = Object.entries(config).filter(
+    ([, itemConfig]) => itemConfig.theme || itemConfig.color,
+  )
+  if (colorConfig.length === 0) return ''
+
+  return Object.entries(THEMES)
+    .map(([theme, prefix]) => {
+      const colorLines = colorConfig
+        .map(([key, itemConfig]) => {
+          const color = resolveConfigColor(itemConfig, theme as keyof typeof THEMES)
+          return color ? `  --color-${key}: ${color};` : null
+        })
+        .filter((line): line is string => !!line)
+        .join('\n')
+
+      return `${prefix} [data-chart=${id}] {\n${colorLines}\n}`
+    })
+    .join('\n')
+}
 
 function useChart() {
   const context = React.useContext(ChartContext)
@@ -44,15 +78,7 @@ const ChartContainer = React.forwardRef<
 
   return (
     <ChartContext.Provider value={{ config }}>
-      <div
-        data-chart={chartId}
-        ref={ref}
-        className={cn(
-          "flex aspect-video justify-center text-xs [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-cartesian-grid_line[stroke='#ccc']]:stroke-border/50 [&_.recharts-curve.recharts-tooltip-cursor]:stroke-border [&_.recharts-dot[stroke='#fff']]:stroke-transparent [&_.recharts-layer]:outline-none [&_.recharts-polar-grid_[stroke='#ccc']]:stroke-border [&_.recharts-radial-bar-background-sector]:fill-muted [&_.recharts-rectangle.recharts-tooltip-cursor]:fill-muted [&_.recharts-reference-line_[stroke='#ccc']]:stroke-border [&_.recharts-sector[stroke='#fff']]:stroke-transparent [&_.recharts-sector]:outline-none [&_.recharts-surface]:outline-none",
-          className,
-        )}
-        {...props}
-      >
+      <div data-chart={chartId} ref={ref} className={cn(CHART_WRAPPER_CLASS, className)} {...props}>
         <ChartStyle id={chartId} config={config} />
         <RechartsPrimitive.ResponsiveContainer>{children}</RechartsPrimitive.ResponsiveContainer>
       </div>
@@ -62,29 +88,15 @@ const ChartContainer = React.forwardRef<
 ChartContainer.displayName = 'Chart'
 
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
-  const colorConfig = Object.entries(config).filter(([, config]) => config.theme || config.color)
-
-  if (!colorConfig.length) {
+  const cssText = createChartCssVariables(id, config)
+  if (!cssText) {
     return null
   }
 
   return (
     <style
       dangerouslySetInnerHTML={{
-        __html: Object.entries(THEMES)
-          .map(
-            ([theme, prefix]) => `
-${prefix} [data-chart=${id}] {
-${colorConfig
-  .map(([key, itemConfig]) => {
-    const color = itemConfig.theme?.[theme as keyof typeof itemConfig.theme] || itemConfig.color
-    return color ? `  --color-${key}: ${color};` : null
-  })
-  .join('\n')}
-}
-`,
-          )
-          .join('\n'),
+        __html: cssText,
       }}
     />
   )
@@ -166,7 +178,7 @@ const ChartTooltipContent = React.forwardRef<
         {!nestLabel ? tooltipLabel : null}
         <div className="grid gap-1.5">
           {payload
-            .filter((item) => item.type !== 'none')
+            .filter((item) => item.type !== HIDDEN_PAYLOAD_TYPE)
             .map((item, index) => {
               const key = `${nameKey || item.name || item.dataKey || 'value'}`
               const itemConfig = getPayloadConfigFromPayload(config, item, key)
@@ -174,7 +186,7 @@ const ChartTooltipContent = React.forwardRef<
 
               return (
                 <div
-                  key={item.dataKey}
+                  key={`${item.dataKey ?? item.name ?? 'item'}-${index}`}
                   className={cn(
                     'flex w-full flex-wrap items-stretch gap-2 [&>svg]:h-2.5 [&>svg]:w-2.5 [&>svg]:text-muted-foreground',
                     indicator === 'dot' && 'items-center',
@@ -220,7 +232,7 @@ const ChartTooltipContent = React.forwardRef<
                             {itemConfig?.label || item.name}
                           </span>
                         </div>
-                        {item.value && (
+                        {hasRenderableValue(item.value) && (
                           <span className="font-mono font-medium tabular-nums text-foreground">
                             {item.value.toLocaleString()}
                           </span>
@@ -264,7 +276,7 @@ const ChartLegendContent = React.forwardRef<
       )}
     >
       {payload
-        .filter((item) => item.type !== 'none')
+        .filter((item) => item.type !== HIDDEN_PAYLOAD_TYPE)
         .map((item) => {
           const key = `${nameKey || item.dataKey || 'value'}`
           const itemConfig = getPayloadConfigFromPayload(config, item, key)

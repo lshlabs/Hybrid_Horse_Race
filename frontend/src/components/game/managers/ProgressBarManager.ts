@@ -9,6 +9,25 @@ import { positionToProgress } from '../../../engine/race/positionUtils'
  * - 트랙 길이(m)는 getTrackLengthM getter로만 조회 (TileMapManager 단일 소스)
  */
 export default class ProgressBarManager {
+  private static readonly BAR_HEIGHT = 12
+  private static readonly BAR_Y_RATIO = 0.1
+  private static readonly BAR_WIDTH_MARGIN = 150
+  private static readonly BAR_BORDER_RADIUS = 6
+  private static readonly BAR_INNER_PADDING = 2
+  private static readonly BAR_INNER_RADIUS = 4
+  private static readonly SHOW_DURATION_MS = 600
+  private static readonly HIDE_DURATION_MS = 400
+  private static readonly DEFAULT_FADE_IN_DURATION_MS = 320
+  private static readonly DEFAULT_FADE_OUT_DURATION_MS = 280
+  private static readonly INDICATOR_GLOW_RADIUS = 12
+  private static readonly INDICATOR_RADIUS = 6
+  private static readonly GLOW_PULSE_DURATION_MS = 1000
+  private static readonly TRACK_COLOR_START = 0x6366f1
+  private static readonly TRACK_COLOR_END = 0xffd700
+  private static readonly CONTAINER_DEPTH = 25
+  private static readonly FINISH_ICON_FONT_FAMILY = 'NeoDunggeunmo'
+  private static readonly FINISH_ICON_FONT_SIZE = '20px'
+
   private scene: Phaser.Scene
   private gameAreaHeight: number // px
   private getTrackLengthM: () => number // m
@@ -18,10 +37,6 @@ export default class ProgressBarManager {
   private fill?: Phaser.GameObjects.Graphics
   private indicator?: Phaser.GameObjects.Container
   private isVisible = false
-
-  private static readonly BAR_HEIGHT = 12
-  private static readonly BAR_Y_RATIO = 0.1
-  private static readonly BAR_WIDTH_MARGIN = 150
 
   constructor(config: {
     scene: Phaser.Scene
@@ -35,13 +50,32 @@ export default class ProgressBarManager {
     this.playerHorseIndex = config.playerHorseIndex
   }
 
-  create() {
-    const gameWidth = this.scene.scale.width // px
-    const barY = this.gameAreaHeight * ProgressBarManager.BAR_Y_RATIO // px
-    const barWidth = (gameWidth - ProgressBarManager.BAR_WIDTH_MARGIN) / 2 // px
-    const barX = gameWidth / 2 // px
+  private getBarLayout() {
+    const gameWidth = this.scene.scale.width
+    const barY = this.gameAreaHeight * ProgressBarManager.BAR_Y_RATIO
+    const barWidth = (gameWidth - ProgressBarManager.BAR_WIDTH_MARGIN) / 2
+    const barX = gameWidth / 2
+    return { gameWidth, barX, barY, barWidth, startX: barX - barWidth / 2 }
+  }
 
-    this.container = this.scene.add.container(0, 0).setDepth(25).setAlpha(0).setScrollFactor(0)
+  private getProgressFillColor(progress: number): number {
+    const fillColor = Phaser.Display.Color.Interpolate.ColorWithColor(
+      Phaser.Display.Color.ValueToColor(ProgressBarManager.TRACK_COLOR_START),
+      Phaser.Display.Color.ValueToColor(ProgressBarManager.TRACK_COLOR_END),
+      100,
+      progress * 100,
+    )
+    return Phaser.Display.Color.GetColor(fillColor.r, fillColor.g, fillColor.b)
+  }
+
+  create() {
+    const { barX, barY, barWidth, startX } = this.getBarLayout()
+
+    this.container = this.scene.add
+      .container(0, 0)
+      .setDepth(ProgressBarManager.CONTAINER_DEPTH)
+      .setAlpha(0)
+      .setScrollFactor(0)
 
     // 배경
     const bg = this.scene.add.graphics()
@@ -51,7 +85,7 @@ export default class ProgressBarManager {
       barY - ProgressBarManager.BAR_HEIGHT / 2,
       barWidth,
       ProgressBarManager.BAR_HEIGHT,
-      6,
+      ProgressBarManager.BAR_BORDER_RADIUS,
     )
     bg.lineStyle(2, 0x6366f1, 0.5)
     bg.strokeRoundedRect(
@@ -59,7 +93,7 @@ export default class ProgressBarManager {
       barY - ProgressBarManager.BAR_HEIGHT / 2,
       barWidth,
       ProgressBarManager.BAR_HEIGHT,
-      6,
+      ProgressBarManager.BAR_BORDER_RADIUS,
     )
     this.container.add(bg)
 
@@ -72,14 +106,17 @@ export default class ProgressBarManager {
     this.container.add(finishIcon)
 
     // 플레이어 인디케이터
-    this.indicator = this.createPlayerIcon(barX - barWidth / 2, barY)
+    this.indicator = this.createPlayerIcon(startX, barY)
     this.container.add(this.indicator)
   }
 
   private createFinishIcon(x: number, y: number) {
     const container = this.scene.add.container(x, y)
     const flag = this.scene.add
-      .text(0, 0, '🏁', { fontFamily: 'NeoDunggeunmo', fontSize: '20px' })
+      .text(0, 0, '🏁', {
+        fontFamily: ProgressBarManager.FINISH_ICON_FONT_FAMILY,
+        fontSize: ProgressBarManager.FINISH_ICON_FONT_SIZE,
+      })
       .setOrigin(0.5)
     container.add(flag)
     return container
@@ -87,21 +124,27 @@ export default class ProgressBarManager {
 
   private createPlayerIcon(x: number, y: number) {
     const container = this.scene.add.container(x, y)
-    const glow = this.scene.add.circle(0, 0, 12, 0xffd700, 0.3)
+    const glow = this.scene.add.circle(
+      0,
+      0,
+      ProgressBarManager.INDICATOR_GLOW_RADIUS,
+      0xffd700,
+      0.3,
+    )
     container.add(glow)
 
     const indicator = this.scene.add.graphics()
     indicator.fillStyle(0xffd700, 1)
-    indicator.fillCircle(0, 0, 6)
+    indicator.fillCircle(0, 0, ProgressBarManager.INDICATOR_RADIUS)
     indicator.lineStyle(2, 0xffffff, 1)
-    indicator.strokeCircle(0, 0, 6)
+    indicator.strokeCircle(0, 0, ProgressBarManager.INDICATOR_RADIUS)
     container.add(indicator)
 
     this.scene.tweens.add({
       targets: glow,
       scale: 1.3,
       alpha: 0.1,
-      duration: 1000,
+      duration: ProgressBarManager.GLOW_PULSE_DURATION_MS,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.easeInOut',
@@ -116,7 +159,7 @@ export default class ProgressBarManager {
     this.scene.tweens.add({
       targets: this.container,
       alpha: 1,
-      duration: 600,
+      duration: ProgressBarManager.SHOW_DURATION_MS,
       ease: 'Power2',
     })
   }
@@ -126,7 +169,7 @@ export default class ProgressBarManager {
     this.scene.tweens.add({
       targets: this.container,
       alpha: 0,
-      duration: 400,
+      duration: ProgressBarManager.HIDE_DURATION_MS,
       ease: 'Power2',
     })
   }
@@ -142,7 +185,7 @@ export default class ProgressBarManager {
   /**
    * 진행바를 페이드인으로 다시 표시 (슬로모 복귀 후 등).
    */
-  setVisibleWithFadeIn(durationMs = 320) {
+  setVisibleWithFadeIn(durationMs = ProgressBarManager.DEFAULT_FADE_IN_DURATION_MS) {
     if (!this.container) return
     this.container.setVisible(true).setAlpha(0)
     this.scene.tweens.add({
@@ -156,7 +199,7 @@ export default class ProgressBarManager {
   /**
    * 진행바를 페이드아웃 후 숨김 (슬로모 시작 시 등).
    */
-  setVisibleWithFadeOut(durationMs = 280) {
+  setVisibleWithFadeOut(durationMs = ProgressBarManager.DEFAULT_FADE_OUT_DURATION_MS) {
     if (!this.container || !this.container.visible) return
     this.scene.tweens.add({
       targets: this.container,
@@ -184,30 +227,22 @@ export default class ProgressBarManager {
       capAtOne: true,
     })
 
-    const gameWidth = this.scene.scale.width
-    const barWidth = (gameWidth - ProgressBarManager.BAR_WIDTH_MARGIN) / 2
-    const barX = gameWidth / 2
-    const barY = this.gameAreaHeight * ProgressBarManager.BAR_Y_RATIO
-    const startX = barX - barWidth / 2
+    const { barX, barY, barWidth, startX } = this.getBarLayout()
     const indicatorX = startX + progress * barWidth
 
     this.fill.clear()
     if (progress > 0) {
-      const fillWidth = Math.min(progress * barWidth, barWidth - 4)
-      const fillColor = Phaser.Display.Color.Interpolate.ColorWithColor(
-        Phaser.Display.Color.ValueToColor(0x6366f1),
-        Phaser.Display.Color.ValueToColor(0xffd700),
-        100,
-        progress * 100,
+      const fillWidth = Math.min(
+        progress * barWidth,
+        barWidth - ProgressBarManager.BAR_INNER_PADDING * 2,
       )
-      const colorValue = Phaser.Display.Color.GetColor(fillColor.r, fillColor.g, fillColor.b)
-      this.fill.fillStyle(colorValue, 0.8)
+      this.fill.fillStyle(this.getProgressFillColor(progress), 0.8)
       this.fill.fillRoundedRect(
-        barX - barWidth / 2 + 2,
-        barY - ProgressBarManager.BAR_HEIGHT / 2 + 2,
+        barX - barWidth / 2 + ProgressBarManager.BAR_INNER_PADDING,
+        barY - ProgressBarManager.BAR_HEIGHT / 2 + ProgressBarManager.BAR_INNER_PADDING,
         fillWidth,
-        ProgressBarManager.BAR_HEIGHT - 4,
-        4,
+        ProgressBarManager.BAR_HEIGHT - ProgressBarManager.BAR_INNER_PADDING * 2,
+        ProgressBarManager.BAR_INNER_RADIUS,
       )
     }
 

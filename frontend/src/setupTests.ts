@@ -1,6 +1,60 @@
 import '@testing-library/jest-dom/vitest'
 import { vi } from 'vitest'
 
+const WEBGL_CONTEXT_IDS = ['webgl', 'webgl2', 'experimental-webgl'] as const
+
+function create2DContextMock() {
+  return {
+    fillStyle: '#000',
+    strokeStyle: '#000',
+    lineWidth: 1,
+    fillRect: () => {},
+    clearRect: () => {},
+    drawImage: () => {},
+    getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+    putImageData: () => {},
+    createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+    setTransform: () => {},
+    resetTransform: () => {},
+    save: () => {},
+    restore: () => {},
+    beginPath: () => {},
+    closePath: () => {},
+    moveTo: () => {},
+    lineTo: () => {},
+    stroke: () => {},
+    translate: () => {},
+    scale: () => {},
+    rotate: () => {},
+    arc: () => {},
+    fill: () => {},
+    measureText: () => ({ width: 0 }),
+    transform: () => {},
+    rect: () => {},
+    clip: () => {},
+  }
+}
+
+function createWebGlContextMock() {
+  return {
+    getExtension: () => null,
+    getParameter: () => null,
+    createShader: () => ({}),
+    shaderSource: () => {},
+    compileShader: () => {},
+    createProgram: () => ({}),
+    attachShader: () => {},
+    linkProgram: () => {},
+    useProgram: () => {},
+    createBuffer: () => ({}),
+    bindBuffer: () => {},
+    bufferData: () => {},
+    viewport: () => {},
+    clearColor: () => {},
+    clear: () => {},
+  }
+}
+
 vi.mock('phaser', () => {
   class MockScene {
     constructor() {}
@@ -43,55 +97,11 @@ Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
   configurable: true,
   value: (contextId: string) => {
     if (contextId === '2d') {
-      return {
-        fillStyle: '#000',
-        strokeStyle: '#000',
-        lineWidth: 1,
-        fillRect: () => {},
-        clearRect: () => {},
-        drawImage: () => {},
-        getImageData: () => ({ data: new Uint8ClampedArray(4) }),
-        putImageData: () => {},
-        createImageData: () => ({ data: new Uint8ClampedArray(4) }),
-        setTransform: () => {},
-        resetTransform: () => {},
-        save: () => {},
-        restore: () => {},
-        beginPath: () => {},
-        closePath: () => {},
-        moveTo: () => {},
-        lineTo: () => {},
-        stroke: () => {},
-        translate: () => {},
-        scale: () => {},
-        rotate: () => {},
-        arc: () => {},
-        fill: () => {},
-        measureText: () => ({ width: 0 }),
-        transform: () => {},
-        rect: () => {},
-        clip: () => {},
-      }
+      return create2DContextMock()
     }
 
-    if (contextId === 'webgl' || contextId === 'webgl2' || contextId === 'experimental-webgl') {
-      return {
-        getExtension: () => null,
-        getParameter: () => null,
-        createShader: () => ({}),
-        shaderSource: () => {},
-        compileShader: () => {},
-        createProgram: () => ({}),
-        attachShader: () => {},
-        linkProgram: () => {},
-        useProgram: () => {},
-        createBuffer: () => ({}),
-        bindBuffer: () => {},
-        bufferData: () => {},
-        viewport: () => {},
-        clearColor: () => {},
-        clear: () => {},
-      }
+    if (WEBGL_CONTEXT_IDS.includes(contextId as (typeof WEBGL_CONTEXT_IDS)[number])) {
+      return createWebGlContextMock()
     }
 
     return null

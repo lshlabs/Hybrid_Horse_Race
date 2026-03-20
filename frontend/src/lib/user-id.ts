@@ -10,27 +10,55 @@ interface GuestSession {
 
 let bootstrapPromise: Promise<GuestSession> | null = null
 
+function readStorageItem(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeStorageItem(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // ignore storage write failures (private mode/quota)
+  }
+}
+
+function removeStorageItem(key: string): void {
+  try {
+    localStorage.removeItem(key)
+  } catch {
+    // ignore storage remove failures (private mode/quota)
+  }
+}
+
+function parseGuestSession(raw: string): GuestSession | null {
+  const parsed = JSON.parse(raw) as Partial<GuestSession>
+  if (
+    typeof parsed.guestId !== 'string' ||
+    parsed.guestId.length === 0 ||
+    typeof parsed.sessionToken !== 'string' ||
+    parsed.sessionToken.length === 0 ||
+    typeof parsed.expiresAtMillis !== 'number' ||
+    !Number.isFinite(parsed.expiresAtMillis)
+  ) {
+    return null
+  }
+  return {
+    guestId: parsed.guestId,
+    sessionToken: parsed.sessionToken,
+    expiresAtMillis: parsed.expiresAtMillis,
+  }
+}
+
 function readCachedSession(): GuestSession | null {
-  const raw = localStorage.getItem(GUEST_SESSION_KEY)
+  const raw = readStorageItem(GUEST_SESSION_KEY)
   if (!raw) return null
 
   try {
-    const parsed = JSON.parse(raw) as Partial<GuestSession>
-    if (
-      typeof parsed.guestId !== 'string' ||
-      parsed.guestId.length === 0 ||
-      typeof parsed.sessionToken !== 'string' ||
-      parsed.sessionToken.length === 0 ||
-      typeof parsed.expiresAtMillis !== 'number' ||
-      !Number.isFinite(parsed.expiresAtMillis)
-    ) {
-      return null
-    }
-    return {
-      guestId: parsed.guestId,
-      sessionToken: parsed.sessionToken,
-      expiresAtMillis: parsed.expiresAtMillis,
-    }
+    return parseGuestSession(raw)
   } catch {
     return null
   }
@@ -41,7 +69,7 @@ function isSessionValid(session: GuestSession): boolean {
 }
 
 function cacheSession(session: GuestSession): void {
-  localStorage.setItem(GUEST_SESSION_KEY, JSON.stringify(session))
+  writeStorageItem(GUEST_SESSION_KEY, JSON.stringify(session))
 }
 
 function shouldRefreshSession(error: unknown): boolean {
@@ -50,10 +78,7 @@ function shouldRefreshSession(error: unknown): boolean {
   if (maybe.code === 'functions/unauthenticated' || maybe.code === 'functions/not-found') {
     return true
   }
-  if (typeof maybe.message === 'string' && maybe.message.includes('Guest session')) {
-    return true
-  }
-  return false
+  return typeof maybe.message === 'string' && maybe.message.includes('Guest session')
 }
 
 async function requestSession(existingGuestId?: string): Promise<GuestSession> {
@@ -100,7 +125,7 @@ export async function getGuestSession(): Promise<GuestSession> {
 }
 
 export async function clearUserId(): Promise<void> {
-  localStorage.removeItem(GUEST_SESSION_KEY)
+  removeStorageItem(GUEST_SESSION_KEY)
 }
 
 export async function withGuestSessionRetry<T>(

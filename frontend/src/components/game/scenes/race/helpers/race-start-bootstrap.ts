@@ -6,21 +6,30 @@ export type RaceStateBootstrapResponseData = {
   nextKeyframe?: unknown
 }
 
-export function shouldMarkInitialAuthoritativeFrameReceived(
-  data: RaceStateBootstrapResponseData,
-): boolean {
-  // prepared 상태라도 keyframe/elapsed 정보가 내려오기 시작하면
-  // "첫 프레임 수신"으로 보고 bootstrap 진행에 사용한다.
-  if (!data.hasRaceState) return false
-  return !!(data.keyframe || data.nextKeyframe || typeof data.elapsedMs === 'number')
-}
-
-export function shouldReleaseRaceStartOverlay(params: {
+export type RaceStartBootstrapReleaseParams = {
   hasReceivedInitialAuthoritativeFrame: boolean
   nowMs: number
   minReadyAtMs: number
-}): boolean {
-  // 첫 프레임 수신 + 최소 연출시간 충족 둘 다 만족해야 overlay를 내린다.
+}
+
+export type RaceStartBootstrapDebugReason = 'first-frame' | 'timeout' | 'already-ready'
+
+function hasRaceState(data: RaceStateBootstrapResponseData): boolean {
+  return data.hasRaceState === true
+}
+
+function hasBootstrapFrameData(data: RaceStateBootstrapResponseData): boolean {
+  return Boolean(data.keyframe || data.nextKeyframe || typeof data.elapsedMs === 'number')
+}
+
+export function shouldMarkInitialAuthoritativeFrameReceived(
+  data: RaceStateBootstrapResponseData,
+): boolean {
+  if (!hasRaceState(data)) return false
+  return hasBootstrapFrameData(data)
+}
+
+export function shouldReleaseRaceStartOverlay(params: RaceStartBootstrapReleaseParams): boolean {
   return params.hasReceivedInitialAuthoritativeFrame && params.nowMs >= params.minReadyAtMs
 }
 
@@ -30,10 +39,9 @@ export function buildRaceStartBootstrapDebugPayload(params: {
   elapsedMs?: number
   hasKeyframe: boolean
   hasNextKeyframe: boolean
-  reason: 'first-frame' | 'timeout' | 'already-ready'
+  reason: RaceStartBootstrapDebugReason
   hasAnyPollResponse?: boolean
 }): Record<string, unknown> {
-  // DEV 로그에서 bootstrap 진행 이유를 빠르게 보려고 만드는 payload
   return {
     roomId: params.roomId,
     setIndex: params.setIndex,

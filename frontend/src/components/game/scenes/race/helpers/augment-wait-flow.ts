@@ -19,6 +19,34 @@ export type NextSetTransitionAction =
   | { type: 'startNewSet'; currentSet?: number }
   | { type: 'finalResult' }
 
+const START_NEW_SET_STATUS: Room['status'] = 'augmentSelection'
+const FINAL_RESULT_STATUS: Room['status'] = 'finished'
+const RESUME_RACE_STATUS: Room['status'] = 'racing'
+const NEXT_STATUS_START_NEW_SET = 'augmentSelection'
+const NEXT_STATUS_FINAL_RESULT = 'finished'
+
+function hasNextSetSyncContext(params: {
+  roomId?: string
+  playerId?: string
+  sessionToken?: string
+  roomJoinToken?: string | null
+  room?: Room
+}): params is {
+  roomId: string
+  playerId: string
+  sessionToken: string
+  roomJoinToken: string
+  room: Room
+} {
+  return !!(
+    params.roomId &&
+    params.playerId &&
+    params.sessionToken &&
+    params.roomJoinToken &&
+    params.room
+  )
+}
+
 export function buildNextSetSyncRequestContext(params: {
   roomId?: string
   playerId?: string
@@ -26,28 +54,25 @@ export function buildNextSetSyncRequestContext(params: {
   roomJoinToken?: string | null
   room?: Room
 }): NextSetSyncRequestContext | null {
-  // 다음 라운드 동기화 요청은 roomId/playerId/session/joinToken이 다 있어야 보낼 수 있다.
-  const { roomId, playerId, sessionToken, roomJoinToken, room } = params
-  if (!roomId || !playerId || !sessionToken || !roomJoinToken || !room) {
+  if (!hasNextSetSyncContext(params)) {
     return null
   }
 
   return {
-    roomId,
-    playerId,
-    sessionToken,
-    joinToken: roomJoinToken,
+    roomId: params.roomId,
+    playerId: params.playerId,
+    sessionToken: params.sessionToken,
+    joinToken: params.roomJoinToken,
   }
 }
 
 export function resolveRoomStatusNextSetAction(
   roomStatus?: Room['status'],
 ): NextSetTransitionAction {
-  // room 상태만 보고 할 수 있는 최소 전이 판단
-  if (roomStatus === 'augmentSelection') {
+  if (roomStatus === START_NEW_SET_STATUS) {
     return { type: 'startNewSet' }
   }
-  if (roomStatus === 'finished') {
+  if (roomStatus === FINAL_RESULT_STATUS) {
     return { type: 'finalResult' }
   }
   return { type: 'none' }
@@ -57,11 +82,11 @@ export function resolveReadyNextSetResponseAction(
   data: ReadyNextSetResponseData,
 ): NextSetTransitionAction {
   // readyNextSet 응답은 "힌트" 성격이고, 최종 복구는 room 상태도 같이 본다.
-  if (data.allReady && data.nextStatus === 'augmentSelection') {
+  if (data.allReady && data.nextStatus === NEXT_STATUS_START_NEW_SET) {
     return { type: 'startNewSet', currentSet: data.currentSet }
   }
 
-  if (data.nextStatus === 'finished') {
+  if (data.nextStatus === NEXT_STATUS_FINAL_RESULT) {
     return { type: 'finalResult' }
   }
 
@@ -72,8 +97,7 @@ export function shouldResumeAfterAugmentSelectionWait(params: {
   isWaitingForOtherAugmentSelections: boolean
   roomStatus?: Room['status']
 }): boolean {
-  // 다른 사람 증강 선택 대기 중이었는데 room이 racing으로 돌아오면 레이스 재개 가능
-  return params.isWaitingForOtherAugmentSelections && params.roomStatus === 'racing'
+  return params.isWaitingForOtherAugmentSelections && params.roomStatus === RESUME_RACE_STATUS
 }
 
 export function resolveWaitingNextSetRoomUpdateAction(params: {
@@ -88,13 +112,13 @@ export function resolveWaitingNextSetRoomUpdateAction(params: {
   }
 
   if (
-    params.roomStatus === 'augmentSelection' &&
+    params.roomStatus === START_NEW_SET_STATUS &&
     (params.roomCurrentSet ?? params.previousSet) >= params.previousSet
   ) {
     return { type: 'startNewSet' }
   }
 
-  if (params.roomStatus === 'finished') {
+  if (params.roomStatus === FINAL_RESULT_STATUS) {
     return { type: 'finalResult' }
   }
 

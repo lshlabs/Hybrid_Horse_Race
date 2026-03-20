@@ -17,6 +17,46 @@ type FinishSequenceOptions = {
 }
 
 const CONFETTI_TEXTURE_KEY = 'confetti-dot'
+const DEFAULT_SLOWMO_SCALE = 0.2
+const DEFAULT_SLOWMO_RESTORE_MS = 800
+const DEFAULT_ZOOM_FACTOR = 1.35
+const DEFAULT_ZOOM_IN_MS = 900
+const DEFAULT_ZOOM_OUT_MS = 450
+const DEFAULT_SHAKE_MS = 140
+const DEFAULT_SHAKE_INTENSITY = 0.002
+const DEFAULT_CONFETTI_BURSTS = 3
+const DEFAULT_CONFETTI_COUNT = 70
+const CONFETTI_BURST_INTERVAL_MS = 220
+const CONFETTI_CLEANUP_DELAY_MS = 1800
+const FINISH_BANNER_FADE_OUT_DELAY_MS = 520
+const TARGET_PAN_DURATION_MS = 200
+const FINISH_EVENT_SLOWMO = 'finish-sequence-slowmo'
+const FINISH_EVENT_SLOWMO_RESTORE = 'finish-sequence-slowmo-restore'
+const FINISH_EVENT_SLOWMO_END = 'finish-sequence-slowmo-end'
+const FINISH_EVENT_HORSE_CROSSED = 'finish-sequence-horse-crossed'
+const FINISH_BANNER_TEXT = 'FINISH!'
+const FINISH_BANNER_FONT_FAMILY = 'NeoDunggeunmo'
+const FINISH_BANNER_FONT_SIZE = '64px'
+const FINISH_BANNER_POP_DURATION_MS = 260
+const FINISH_BANNER_SETTLE_DURATION_MS = 160
+const FINISH_BANNER_FADE_DURATION_MS = 400
+
+function getFinishSequenceSettings(opts: FinishSequenceOptions) {
+  return {
+    enableSlowmo: opts.enableSlowmo ?? true,
+    enableCameraZoom: opts.enableCameraZoom ?? true,
+    slowmoScale: opts.slowmoScale ?? DEFAULT_SLOWMO_SCALE,
+    slowmoRestoreMs: opts.slowmoRestoreMs ?? DEFAULT_SLOWMO_RESTORE_MS,
+    zoomFactor: opts.zoomFactor ?? DEFAULT_ZOOM_FACTOR,
+    zoomInMs: opts.zoomInMs ?? DEFAULT_ZOOM_IN_MS,
+    zoomOutMs: opts.zoomOutMs ?? DEFAULT_ZOOM_OUT_MS,
+    shakeMs: opts.shakeMs ?? DEFAULT_SHAKE_MS,
+    shakeIntensity: opts.shakeIntensity ?? DEFAULT_SHAKE_INTENSITY,
+    confettiBursts: opts.confettiBursts ?? DEFAULT_CONFETTI_BURSTS,
+    confettiCount: opts.confettiCount ?? DEFAULT_CONFETTI_COUNT,
+    onComplete: opts.onComplete,
+  }
+}
 
 /** 컨페티 파티클용 점 텍스처를 한 번만 만든다. */
 function ensureConfettiTexture(scene: Phaser.Scene) {
@@ -39,32 +79,21 @@ export function playFinishSequence(
   target: Phaser.GameObjects.GameObject | undefined,
   opts: FinishSequenceOptions = {},
 ) {
-  const slowmoScale = opts.slowmoScale ?? 0.2
-  const enableSlowmo = opts.enableSlowmo ?? true
-  const enableCameraZoom = opts.enableCameraZoom ?? true
-  const slowmoRestoreMs = opts.slowmoRestoreMs ?? 800
-  const zoomFactor = opts.zoomFactor ?? 1.35
-  const zoomInMs = opts.zoomInMs ?? 900
-  const zoomOutMs = opts.zoomOutMs ?? 450
-  const shakeMs = opts.shakeMs ?? 140
-  const shakeIntensity = opts.shakeIntensity ?? 0.002
-  const confettiBursts = opts.confettiBursts ?? 3
-  const confettiCount = opts.confettiCount ?? 70
-  const onComplete = opts.onComplete
+  const settings = getFinishSequenceSettings(opts)
 
   const cam = scene.cameras.main
   const baseZoom = cam.zoom
 
-  if (enableSlowmo) {
+  if (settings.enableSlowmo) {
     // 슬로모는 화면 렌더 자체가 아니라 시뮬레이션 재생 속도만 바꾸도록 이벤트로 요청한다.
-    scene.events.emit('finish-sequence-slowmo', slowmoScale, slowmoRestoreMs)
-    scene.events.once('finish-sequence-slowmo-restore', () => {
-      scene.events.emit('finish-sequence-slowmo-end')
+    scene.events.emit(FINISH_EVENT_SLOWMO, settings.slowmoScale, settings.slowmoRestoreMs)
+    scene.events.once(FINISH_EVENT_SLOWMO_RESTORE, () => {
+      scene.events.emit(FINISH_EVENT_SLOWMO_END)
     })
   }
 
-  let zoomOutDone = !enableCameraZoom
-  let slowmoDone = !enableSlowmo
+  let zoomOutDone = !settings.enableCameraZoom
+  let slowmoDone = !settings.enableSlowmo
   let postEffectsRun = false
 
   const runPostEffects = () => {
@@ -88,22 +117,22 @@ export function playFinishSequence(
     const burstXs = [0, 1, -1].map((offset) => scene.scale.width / 2 + offset * 120)
     const burstY = scene.scale.height * 0.25
 
-    for (let i = 0; i < confettiBursts; i++) {
-      scene.time.delayedCall(i * 220, () => {
+    for (let i = 0; i < settings.confettiBursts; i++) {
+      scene.time.delayedCall(i * CONFETTI_BURST_INTERVAL_MS, () => {
         const x = burstXs[i % burstXs.length]
-        particles.emitParticleAt(x, burstY, confettiCount)
+        particles.emitParticleAt(x, burstY, settings.confettiCount)
       })
     }
 
-    scene.time.delayedCall(1800, () => {
+    scene.time.delayedCall(CONFETTI_CLEANUP_DELAY_MS, () => {
       particles.destroy()
     })
 
     // 2) FINISH 배너
     const banner = scene.add
-      .text(scene.scale.width / 2, scene.scale.height * 0.32, 'FINISH!', {
-        fontFamily: 'NeoDunggeunmo',
-        fontSize: '64px',
+      .text(scene.scale.width / 2, scene.scale.height * 0.32, FINISH_BANNER_TEXT, {
+        fontFamily: FINISH_BANNER_FONT_FAMILY,
+        fontSize: FINISH_BANNER_FONT_SIZE,
         color: '#fff7b1',
         stroke: '#1a0f00',
         strokeThickness: 8,
@@ -118,24 +147,24 @@ export function playFinishSequence(
       targets: banner,
       alpha: 1,
       scale: 1.2,
-      duration: 260,
+      duration: FINISH_BANNER_POP_DURATION_MS,
       ease: 'Back.Out',
       onComplete: () => {
         scene.tweens.add({
           targets: banner,
           scale: 1,
-          duration: 160,
+          duration: FINISH_BANNER_SETTLE_DURATION_MS,
           ease: 'Sine.Out',
         })
         scene.tweens.add({
           targets: banner,
           alpha: 0,
-          duration: 400,
-          delay: 520,
+          duration: FINISH_BANNER_FADE_DURATION_MS,
+          delay: FINISH_BANNER_FADE_OUT_DELAY_MS,
           ease: 'Sine.In',
           onComplete: () => {
             banner.destroy()
-            onComplete?.()
+            settings.onComplete?.()
           },
         })
       },
@@ -143,11 +172,15 @@ export function playFinishSequence(
   }
 
   // 카메라 연출: 줌인 -> 결승 통과 이벤트를 받으면 줌아웃
-  if (enableCameraZoom) {
+  if (settings.enableCameraZoom) {
     if (target && (target as Phaser.GameObjects.Sprite).x !== undefined) {
-      cam.pan((target as Phaser.GameObjects.Sprite).x, (target as Phaser.GameObjects.Sprite).y, 200)
+      cam.pan(
+        (target as Phaser.GameObjects.Sprite).x,
+        (target as Phaser.GameObjects.Sprite).y,
+        TARGET_PAN_DURATION_MS,
+      )
     }
-    cam.shake(shakeMs, shakeIntensity)
+    cam.shake(settings.shakeMs, settings.shakeIntensity)
 
     let zoomOutStarted = false
     const startZoomOut = () => {
@@ -157,7 +190,7 @@ export function playFinishSequence(
       scene.tweens.add({
         targets: cam,
         zoom: baseZoom,
-        duration: zoomOutMs,
+        duration: settings.zoomOutMs,
         ease: 'Sine.InOut',
         onComplete: () => {
           zoomOutDone = true
@@ -168,24 +201,24 @@ export function playFinishSequence(
 
     const zoomInTween = scene.tweens.add({
       targets: cam,
-      zoom: baseZoom * zoomFactor,
-      duration: zoomInMs,
+      zoom: baseZoom * settings.zoomFactor,
+      duration: settings.zoomInMs,
       ease: 'Sine.Out',
     })
 
-    scene.events.once('finish-sequence-horse-crossed', () => {
+    scene.events.once(FINISH_EVENT_HORSE_CROSSED, () => {
       zoomInTween.stop()
       startZoomOut()
     })
   }
 
-  if (enableSlowmo) {
+  if (settings.enableSlowmo) {
     const onSlowmoEnd = () => {
       slowmoDone = true
       runPostEffects()
     }
 
-    scene.events.once('finish-sequence-slowmo-end', onSlowmoEnd)
+    scene.events.once(FINISH_EVENT_SLOWMO_END, onSlowmoEnd)
   }
 
   runPostEffects()

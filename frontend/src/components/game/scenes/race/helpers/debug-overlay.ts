@@ -5,6 +5,12 @@ export const AUTHORITATIVE_DEBUG_HOTKEYS = {
   COPY_SNAPSHOT: 'F9',
 } as const
 
+const DEFAULT_DEBUG_RENDER_INTERVAL_MS = 250
+
+function formatFixed(value: number, digits: number): string {
+  return value.toFixed(digits)
+}
+
 export type AuthoritativeDebugMetrics = {
   frameCount: number
   hardSnapCount: number
@@ -29,19 +35,32 @@ export function buildAuthoritativeDebugSnapshotLine(params: {
   simElapsedSec: number
   metrics: AuthoritativeDebugMetrics
 }): string {
-  // 클립보드 복사용 1줄 요약 문자열
   const { sampleCount, meanError } = getAuthoritativeDebugMetricSummary(params.metrics)
   return [
     `set=${params.currentSet}`,
-    `elapsedSec=${params.simElapsedSec.toFixed(3)}`,
+    `elapsedSec=${formatFixed(params.simElapsedSec, 3)}`,
     `frames=${params.metrics.frameCount}`,
     `samples=${sampleCount}`,
     `hardSnap=${params.metrics.hardSnapCount}`,
     `soft=${params.metrics.softCorrectionCount}`,
     `timeSnap=${params.metrics.timeHardSnapCount}`,
-    `posErrMean=${meanError.toFixed(4)}`,
-    `posErrMax=${params.metrics.positionErrorMax.toFixed(4)}`,
+    `posErrMean=${formatFixed(meanError, 4)}`,
+    `posErrMax=${formatFixed(params.metrics.positionErrorMax, 4)}`,
   ].join(' ')
+}
+
+function buildAuthoritativeDebugOverlayLines(params: {
+  currentSet: number
+  simElapsedSec: number
+  metrics: AuthoritativeDebugMetrics
+}): string[] {
+  const { sampleCount, meanError } = getAuthoritativeDebugMetricSummary(params.metrics)
+  return [
+    `[AuthReplay] set=${params.currentSet} elapsed=${formatFixed(params.simElapsedSec, 2)}s`,
+    `frames=${params.metrics.frameCount} samples=${sampleCount}`,
+    `hardSnap=${params.metrics.hardSnapCount} soft=${params.metrics.softCorrectionCount} timeSnap=${params.metrics.timeHardSnapCount}`,
+    `posErrMean=${formatFixed(meanError, 3)}m posErrMax=${formatFixed(params.metrics.positionErrorMax, 3)}m`,
+  ]
 }
 
 export function buildAuthoritativeDebugOverlayText(params: {
@@ -49,14 +68,7 @@ export function buildAuthoritativeDebugOverlayText(params: {
   simElapsedSec: number
   metrics: AuthoritativeDebugMetrics
 }): string {
-  // 화면 오버레이로 보여주는 여러 줄 텍스트
-  const { sampleCount, meanError } = getAuthoritativeDebugMetricSummary(params.metrics)
-  return [
-    `[AuthReplay] set=${params.currentSet} elapsed=${params.simElapsedSec.toFixed(2)}s`,
-    `frames=${params.metrics.frameCount} samples=${sampleCount}`,
-    `hardSnap=${params.metrics.hardSnapCount} soft=${params.metrics.softCorrectionCount} timeSnap=${params.metrics.timeHardSnapCount}`,
-    `posErrMean=${meanError.toFixed(3)}m posErrMax=${params.metrics.positionErrorMax.toFixed(3)}m`,
-  ].join('\n')
+  return buildAuthoritativeDebugOverlayLines(params).join('\n')
 }
 
 export function shouldRenderAuthoritativeDebugOverlay(params: {
@@ -64,8 +76,7 @@ export function shouldRenderAuthoritativeDebugOverlay(params: {
   lastRenderMs: number
   minIntervalMs?: number
 }): { shouldRender: boolean; nextLastRenderMs: number } {
-  // 디버그 오버레이는 너무 자주 갱신하면 오히려 화면/성능 확인이 어렵다.
-  const minIntervalMs = params.minIntervalMs ?? 250
+  const minIntervalMs = params.minIntervalMs ?? DEFAULT_DEBUG_RENDER_INTERVAL_MS
   if (params.nowMs - params.lastRenderMs < minIntervalMs) {
     return { shouldRender: false, nextLastRenderMs: params.lastRenderMs }
   }

@@ -20,6 +20,31 @@ export type RaceGameData = {
   selectedHorse?: SelectedHorseData
 }
 
+const SCENE_DATA_KEYS = {
+  roomId: 'roomId',
+  playerId: 'playerId',
+  sessionToken: 'sessionToken',
+  roomJoinToken: 'roomJoinToken',
+  room: 'room',
+  players: 'players',
+  selectedHorse: 'selectedHorse',
+} as const
+
+const ROOM_DATA_UPDATED_EVENT = 'room-data-updated'
+const MISSING_ROOM_ID_WARNING = '[RaceScene] No roomId found in scene.data'
+
+function readRaceGameDataFromSceneData(scene: Phaser.Scene): RaceGameData {
+  return {
+    roomId: scene.data.get(SCENE_DATA_KEYS.roomId),
+    playerId: scene.data.get(SCENE_DATA_KEYS.playerId),
+    sessionToken: scene.data.get(SCENE_DATA_KEYS.sessionToken),
+    roomJoinToken: scene.data.get(SCENE_DATA_KEYS.roomJoinToken),
+    room: scene.data.get(SCENE_DATA_KEYS.room),
+    players: scene.data.get(SCENE_DATA_KEYS.players),
+    selectedHorse: scene.data.get(SCENE_DATA_KEYS.selectedHorse),
+  }
+}
+
 /**
  * RaceScene 데이터 동기화 전담 클래스
  * Scene.init(data), scene.data, room-data-updated 이벤트를 여기서 묶어서 처리한다.
@@ -41,39 +66,32 @@ export default class RaceDataSync {
 
   applyInitData(data?: RaceGameData) {
     if (!data) return
-    this.onDataApplied(data)
+    this.applyData(data)
   }
 
   loadFromSceneData() {
-    // PhaserGame에서 scene.data에 넣어준 값을 RaceScene에서 쓰는 구조로 읽어온다.
-    const nextData: RaceGameData = {
-      roomId: this.scene.data.get('roomId'),
-      playerId: this.scene.data.get('playerId'),
-      sessionToken: this.scene.data.get('sessionToken'),
-      roomJoinToken: this.scene.data.get('roomJoinToken'),
-      room: this.scene.data.get('room'),
-      players: this.scene.data.get('players'),
-      selectedHorse: this.scene.data.get('selectedHorse'),
-    }
-    this.onDataApplied(nextData)
+    const nextData = readRaceGameDataFromSceneData(this.scene)
+    this.applyData(nextData)
 
     if (!nextData.roomId && import.meta.env.DEV) {
-      console.warn('[RaceScene] No roomId found in scene.data')
+      console.warn(MISSING_ROOM_ID_WARNING)
     }
   }
 
   subscribe() {
-    // PhaserGame -> RaceScene 데이터 업데이트 이벤트 등록
-    this.scene.events.on('room-data-updated', this.handleRoomDataUpdated)
+    this.scene.events.on(ROOM_DATA_UPDATED_EVENT, this.handleRoomDataUpdated)
   }
 
   unsubscribe() {
-    // 씬 재진입 때 중복 핸들러가 생기지 않게 종료 시 해제한다.
-    this.scene.events.off('room-data-updated', this.handleRoomDataUpdated)
+    this.scene.events.off(ROOM_DATA_UPDATED_EVENT, this.handleRoomDataUpdated)
   }
 
   private readonly handleRoomDataUpdated = (data: RaceGameData) => {
-    this.onDataApplied(data)
+    this.applyData(data)
     this.onDataUpdated()
+  }
+
+  private applyData(data: RaceGameData) {
+    this.onDataApplied(data)
   }
 }

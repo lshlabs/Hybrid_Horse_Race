@@ -8,7 +8,7 @@
  * 3. 로비 기능 테스트 (Mock 데이터 사용)
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Eye, EyeOff, Copy, Check, Crown, SquarePen } from 'lucide-react'
@@ -51,7 +51,7 @@ function createMockRoom(roomId: string): Room {
     roundCount: 3,
     rerollLimit: 2,
     rerollUsed: 0,
-    status: 'waiting' as RoomStatus,
+    status: ROOM_STATUS_WAITING,
     currentSet: 1,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -91,6 +91,55 @@ function registerWaitingRoomExitLeaveHandlers(onLeave: () => void): () => void {
   }
 }
 
+const DEFAULT_ROOM_CONFIG = {
+  playerCount: 2,
+  roundCount: 3,
+  rerollLimit: 2,
+}
+const RELOAD_REDIRECT_KEY = 'lobby.reload.redirect'
+const RELOAD_REDIRECT_WINDOW_MS = 10000
+const ROOM_STATUS_WAITING: RoomStatus = 'waiting'
+const ROOM_STATUS_HORSE_SELECTION: RoomStatus = 'horseSelection'
+const ROOM_STATUS_AUGMENT_SELECTION: RoomStatus = 'augmentSelection'
+const ROOM_STATUS_RACING: RoomStatus = 'racing'
+const ROOM_STATUS_SET_RESULT: RoomStatus = 'setResult'
+const ROOM_STATUS_FINISHED: RoomStatus = 'finished'
+
+const NAME_MIN_LENGTH = 2
+const NAME_MAX_LENGTH = 12
+const NAME_PATTERN = /^[a-zA-Z0-9가-힣\s]+$/
+
+function readDevRoomConfig() {
+  try {
+    const saved = localStorage.getItem('dev_room_config')
+    if (saved) {
+      return JSON.parse(saved)
+    }
+  } catch (err) {
+    console.warn('[LobbyPageTest] Failed to load room config from localStorage:', err)
+  }
+
+  return DEFAULT_ROOM_CONFIG
+}
+
+function validatePlayerName(name: string): boolean {
+  if (name.length < NAME_MIN_LENGTH || name.length > NAME_MAX_LENGTH) return false
+  return NAME_PATTERN.test(name)
+}
+
+function getPlayerNameErrorMessage(name: string): string | null {
+  const trimmedName = name.trim()
+  if (!trimmedName) return null
+  if (validatePlayerName(trimmedName)) return null
+  if (trimmedName.length < NAME_MIN_LENGTH) {
+    return `이름은 최소 ${NAME_MIN_LENGTH}자 이상이어야 합니다.`
+  }
+  if (trimmedName.length > NAME_MAX_LENGTH) {
+    return `이름은 최대 ${NAME_MAX_LENGTH}자까지 입력할 수 있습니다.`
+  }
+  return '숫자, 영어, 한글, 공백만 사용할 수 있습니다.'
+}
+
 export function LobbyPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -110,8 +159,6 @@ export function LobbyPage() {
   )
   const [isJoiningRoom, setIsJoiningRoom] = useState(false)
   const [joinAttemptCount, setJoinAttemptCount] = useState(0)
-  const RELOAD_REDIRECT_KEY = 'lobby.reload.redirect'
-  const RELOAD_REDIRECT_WINDOW_MS = 10000
   const hasLeaveSentRef = useRef(false)
   const roomIdRef = useRef<string | null>(null)
   const playerIdRef = useRef<string>('')
@@ -229,7 +276,7 @@ export function LobbyPage() {
     sessionToken: string
     joinToken: string
   } | null => {
-    if (roomStatusRef.current !== 'waiting') return null
+    if (roomStatusRef.current !== ROOM_STATUS_WAITING) return null
 
     const rid = roomIdRef.current
     const pid = playerIdRef.current
@@ -309,7 +356,7 @@ export function LobbyPage() {
 
   const shouldAutoJoinRoom = (): boolean => {
     if (!roomId || !room || isJoiningRoom) return false
-    if (room.status !== 'waiting') return false
+    if (room.status !== ROOM_STATUS_WAITING) return false
     if (joinAttemptCount >= 2) return false
     return true
   }
@@ -395,23 +442,7 @@ export function LobbyPage() {
     t,
   ])
 
-  // 게임 설정을 localStorage에서 가져오기 (개선 사항 3)
-  const roomConfig = (() => {
-    try {
-      const saved = localStorage.getItem('dev_room_config')
-      if (saved) {
-        return JSON.parse(saved)
-      }
-    } catch (err) {
-      console.warn('[LobbyPageTest] Failed to load room config from localStorage:', err)
-    }
-    // 기본값
-    return {
-      playerCount: 2,
-      roundCount: 3,
-      rerollLimit: 2,
-    }
-  })()
+  const roomConfig = useMemo(() => readDevRoomConfig(), [])
 
   const playerCount = roomConfig.playerCount
   const roundCount = room?.roundCount ?? roomConfig.roundCount
@@ -518,43 +549,29 @@ export function LobbyPage() {
   useEffect(() => {
     if (!roomId || !room || !playerId) return
 
-    if (room.status === 'horseSelection') {
+    if (room.status === ROOM_STATUS_HORSE_SELECTION) {
       const params = new URLSearchParams({ roomId, playerId })
       navigate(`/horse-selection?${params.toString()}`, { replace: true })
       return
     }
 
     if (
-      room.status === 'augmentSelection' ||
-      room.status === 'racing' ||
-      room.status === 'setResult'
+      room.status === ROOM_STATUS_AUGMENT_SELECTION ||
+      room.status === ROOM_STATUS_RACING ||
+      room.status === ROOM_STATUS_SET_RESULT
     ) {
       const params = new URLSearchParams({ roomId, playerId })
       navigate(`/race?${params.toString()}`, { replace: true })
       return
     }
 
-    if (room.status === 'finished') {
+    if (room.status === ROOM_STATUS_FINISHED) {
       const params = new URLSearchParams({ roomId, playerId })
       navigate(`/race-result?${params.toString()}`, { replace: true })
     }
   }, [navigate, playerId, room, roomId])
 
-  // 입력값 검증: 숫자, 영어, 한글, 공백만 허용, 2-12자
-  const isValidName = (name: string): boolean => {
-    if (name.length < 2 || name.length > 12) return false
-    return /^[a-zA-Z0-9가-힣\s]+$/.test(name)
-  }
-
-  const nameError = newPlayerName.trim()
-    ? isValidName(newPlayerName.trim())
-      ? null
-      : newPlayerName.trim().length < 2
-        ? '이름은 최소 2자 이상이어야 합니다.'
-        : newPlayerName.trim().length > 12
-          ? '이름은 최대 12자까지 입력할 수 있습니다.'
-          : '숫자, 영어, 한글, 공백만 사용할 수 있습니다.'
-    : null
+  const nameError = getPlayerNameErrorMessage(newPlayerName)
   const [selectedPlayerSlot] = useState<string>('host')
 
   // 언어 변경 감지
@@ -831,7 +848,7 @@ export function LobbyPage() {
 
     const trimmedName = newPlayerName.trim()
     if (!trimmedName) return null
-    if (!isValidName(trimmedName)) return null
+    if (!validatePlayerName(trimmedName)) return null
 
     return { playerId: editingPlayerId, trimmedName }
   }
@@ -915,217 +932,215 @@ export function LobbyPage() {
   return (
     <div className="flex w-full flex-1 flex-col items-center justify-center">
       <div className="w-full max-w-md rounded-3xl border border-white/10 bg-surface/80 p-6 shadow-surface backdrop-blur-lg">
-          <header className="mb-6 text-center">
-            <h1 className="mt-2 text-2xl font-display text-foreground">{t('lobby.title')}</h1>
-            <p className="mt-2 text-xs text-muted-foreground">{t('lobby.subtitle')}</p>
-            {displayRoom?.title && (
-              <p className="mt-1 text-xs text-foreground0">{displayRoom.title}</p>
-            )}
-          </header>
-
-          {errorMessage && (
-            <div className="mb-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-400">
-              {errorMessage}
-            </div>
+        <header className="mb-6 text-center">
+          <h1 className="mt-2 text-2xl font-display text-foreground">{t('lobby.title')}</h1>
+          <p className="mt-2 text-xs text-muted-foreground">{t('lobby.subtitle')}</p>
+          {displayRoom?.title && (
+            <p className="mt-1 text-xs text-foreground0">{displayRoom.title}</p>
           )}
+        </header>
 
-          <ul className="space-y-3">
-            {/* 호스트는 항상 표시 */}
-            {(() => {
-              const host = displayPlayers.find((p) => p.isHost)
-              if (!host) return null
+        {errorMessage && (
+          <div className="mb-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-400">
+            {errorMessage}
+          </div>
+        )}
 
-              const isCurrentUser = isPlayerCurrentUser(host, 'host')
+        <ul className="space-y-3">
+          {/* 호스트는 항상 표시 */}
+          {(() => {
+            const host = displayPlayers.find((p) => p.isHost)
+            if (!host) return null
 
-              return (
-                <li
-                  key="host"
-                  className="flex items-center gap-2 sm:gap-3 rounded-2xl bg-surface-muted/80 px-3 sm:px-4 py-3"
-                >
-                  <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-lg text-muted-foreground">
-                    1
-                  </div>
-                  <div className="flex flex-1 min-w-0 items-center gap-1.5 sm:gap-2">
-                    <span className="flex items-center justify-center flex-shrink-0">
-                      <Crown className="h-4 w-4 text-yellow-400" />
-                    </span>
-                    <div className="flex flex-1 min-w-0 items-center gap-2">
-                      <p className="text-sm font-semibold text-foreground truncate">
-                        {host.name || 'Host'}
-                      </p>
-                      {isCurrentUser && (editingPlayerId !== host.id || !isNameEditDialogOpen) && (
-                        <button
-                          type="button"
-                          onClick={() => handleOpenNameEdit(host)}
-                          className="flex-shrink-0 text-muted-foreground transition hover:text-foreground"
-                          aria-label={t('lobby.editName', { defaultValue: '이름 수정' })}
-                        >
-                          <SquarePen className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </li>
-              )
-            })()}
+            const isCurrentUser = isPlayerCurrentUser(host, 'host')
 
-            {/* 일반 플레이어 슬롯 (maxPlayers - 1개) */}
-            {Array.from({ length: effectiveMaxPlayers - 1 }).map((_, idx) => {
-              const player = displayGuestPlayers[idx]
-              const isConnected = player !== undefined
-              const slotPlayerId = player?.id ?? `player-${idx + 1}`
-              const isCurrentUser = isPlayerCurrentUser(player, `player-${slotPlayerId}`)
-
-              return (
-                <li
-                  key={`slot-${idx}`}
-                  className={`flex items-center gap-2 sm:gap-3 rounded-2xl px-3 sm:px-4 py-3 ${
-                    isConnected
-                      ? 'bg-surface-muted/80'
-                      : 'bg-surface-muted/40 border-2 border-dashed border-border'
-                  }`}
-                >
-                  <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-lg text-muted-foreground">
-                    {idx + 2}
-                  </div>
-                  <div className="flex flex-1 min-w-0 items-center gap-1.5 sm:gap-2">
-                    {isCurrentUser && isConnected && (
-                      <Badge
-                        variant="outline"
-                        className="border-primary/50 bg-primary/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-primary flex-shrink-0"
+            return (
+              <li
+                key="host"
+                className="flex items-center gap-2 sm:gap-3 rounded-2xl bg-surface-muted/80 px-3 sm:px-4 py-3"
+              >
+                <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-lg text-muted-foreground">
+                  1
+                </div>
+                <div className="flex flex-1 min-w-0 items-center gap-1.5 sm:gap-2">
+                  <span className="flex items-center justify-center flex-shrink-0">
+                    <Crown className="h-4 w-4 text-yellow-400" />
+                  </span>
+                  <div className="flex flex-1 min-w-0 items-center gap-2">
+                    <p className="text-sm font-semibold text-foreground truncate">
+                      {host.name || 'Host'}
+                    </p>
+                    {isCurrentUser && (editingPlayerId !== host.id || !isNameEditDialogOpen) && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenNameEdit(host)}
+                        className="flex-shrink-0 text-muted-foreground transition hover:text-foreground"
+                        aria-label={t('lobby.editName', { defaultValue: '이름 수정' })}
                       >
-                        {t('lobby.me', { defaultValue: '나' })}
-                      </Badge>
+                        <SquarePen className="h-3.5 w-3.5" />
+                      </button>
                     )}
-                    <div className="flex flex-1 min-w-0 items-center gap-2">
-                      {isConnected ? (
-                        <>
-                          <p className="text-sm font-semibold text-foreground truncate">
-                            {player.name || `Player ${idx + 2}`}
-                          </p>
-                          {isCurrentUser &&
-                            !player.isReady &&
-                            (editingPlayerId !== player.id || !isNameEditDialogOpen) && (
-                              <button
-                                type="button"
-                                onClick={() => handleOpenNameEdit(player)}
-                                className="flex-shrink-0 text-muted-foreground transition hover:text-foreground"
-                                aria-label={t('lobby.editName', { defaultValue: '이름 수정' })}
-                              >
-                                <SquarePen className="h-3.5 w-3.5" />
-                              </button>
-                            )}
-                        </>
-                      ) : (
-                        <p className="text-sm font-semibold text-muted-foreground truncate">
-                          {/* 빈칸 */}
-                        </p>
-                      )}
-                    </div>
                   </div>
-                  {isConnected ? (
+                </div>
+              </li>
+            )
+          })()}
+
+          {/* 일반 플레이어 슬롯 (maxPlayers - 1개) */}
+          {Array.from({ length: effectiveMaxPlayers - 1 }).map((_, idx) => {
+            const player = displayGuestPlayers[idx]
+            const isConnected = player !== undefined
+            const slotPlayerId = player?.id ?? `player-${idx + 1}`
+            const isCurrentUser = isPlayerCurrentUser(player, `player-${slotPlayerId}`)
+
+            return (
+              <li
+                key={`slot-${idx}`}
+                className={`flex items-center gap-2 sm:gap-3 rounded-2xl px-3 sm:px-4 py-3 ${
+                  isConnected
+                    ? 'bg-surface-muted/80'
+                    : 'bg-surface-muted/40 border-2 border-dashed border-border'
+                }`}
+              >
+                <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-lg text-muted-foreground">
+                  {idx + 2}
+                </div>
+                <div className="flex flex-1 min-w-0 items-center gap-1.5 sm:gap-2">
+                  {isCurrentUser && isConnected && (
                     <Badge
                       variant="outline"
-                      className={
-                        player.isReady
-                          ? 'inline-flex items-center gap-1 border-success/40 bg-success/10 px-2 py-0.5 text-[10px] text-success flex-shrink-0'
-                          : 'inline-flex items-center gap-1 border-warning/40 bg-warning/10 px-2 py-0.5 text-[10px] text-warning flex-shrink-0'
-                      }
+                      className="border-primary/50 bg-primary/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-primary flex-shrink-0"
                     >
-                      {player.isReady ? (
-                        <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                      ) : (
-                        <Spinner className="text-warning" size={12} />
-                      )}
-                      {player.isReady ? t('lobby.status.ready') : t('lobby.status.preparing')}
-                    </Badge>
-                  ) : (
-                    <Badge
-                      variant="outline"
-                      className="inline-flex items-center gap-1 border-muted-foreground/40 bg-muted-foreground/10 px-2 py-0.5 text-[10px] text-muted-foreground flex-shrink-0"
-                    >
-                      연결 중
+                      {t('lobby.me', { defaultValue: '나' })}
                     </Badge>
                   )}
-                </li>
-              )
-            })}
-          </ul>
+                  <div className="flex flex-1 min-w-0 items-center gap-2">
+                    {isConnected ? (
+                      <>
+                        <p className="text-sm font-semibold text-foreground truncate">
+                          {player.name || `Player ${idx + 2}`}
+                        </p>
+                        {isCurrentUser &&
+                          !player.isReady &&
+                          (editingPlayerId !== player.id || !isNameEditDialogOpen) && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenNameEdit(player)}
+                              className="flex-shrink-0 text-muted-foreground transition hover:text-foreground"
+                              aria-label={t('lobby.editName', { defaultValue: '이름 수정' })}
+                            >
+                              <SquarePen className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                      </>
+                    ) : (
+                      <p className="text-sm font-semibold text-muted-foreground truncate">
+                        {/* 빈칸 */}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                {isConnected ? (
+                  <Badge
+                    variant="outline"
+                    className={
+                      player.isReady
+                        ? 'inline-flex items-center gap-1 border-success/40 bg-success/10 px-2 py-0.5 text-[10px] text-success flex-shrink-0'
+                        : 'inline-flex items-center gap-1 border-warning/40 bg-warning/10 px-2 py-0.5 text-[10px] text-warning flex-shrink-0'
+                    }
+                  >
+                    {player.isReady ? (
+                      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                    ) : (
+                      <Spinner className="text-warning" size={12} />
+                    )}
+                    {player.isReady ? t('lobby.status.ready') : t('lobby.status.preparing')}
+                  </Badge>
+                ) : (
+                  <Badge
+                    variant="outline"
+                    className="inline-flex items-center gap-1 border-muted-foreground/40 bg-muted-foreground/10 px-2 py-0.5 text-[10px] text-muted-foreground flex-shrink-0"
+                  >
+                    연결 중
+                  </Badge>
+                )}
+              </li>
+            )
+          })}
+        </ul>
 
-          {/* 초대 링크 */}
-          <div className="mt-6 space-y-3 rounded-2xl border border-dashed border-white/15 bg-white/5 p-4">
-            <p className="text-xs uppercase tracking-[0.35em] text-muted-foreground">
-              {t('lobby.invite')}
-            </p>
-            <div className="flex gap-2">
-              <div className="flex flex-1 items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-background/80 px-4 py-3 text-sm text-foreground">
-                <span
-                  data-invite-url
-                  className="block flex-1 whitespace-nowrap select-text overflow-x-auto scrollbar-hide"
-                >
-                  {isUrlVisible ? inviteUrl : '••••••••••••••••••••••••••••••••'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setIsUrlVisible(!isUrlVisible)}
-                  className="flex-shrink-0 text-muted-foreground transition hover:text-foreground"
-                  aria-label={isUrlVisible ? t('lobby.urlHide') : t('lobby.urlShow')}
-                >
-                  {isUrlVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
+        {/* 초대 링크 */}
+        <div className="mt-6 space-y-3 rounded-2xl border border-dashed border-white/15 bg-white/5 p-4">
+          <p className="text-xs uppercase tracking-[0.35em] text-muted-foreground">
+            {t('lobby.invite')}
+          </p>
+          <div className="flex gap-2">
+            <div className="flex flex-1 items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-background/80 px-4 py-3 text-sm text-foreground">
+              <span
+                data-invite-url
+                className="block flex-1 whitespace-nowrap select-text overflow-x-auto scrollbar-hide"
+              >
+                {isUrlVisible ? inviteUrl : '••••••••••••••••••••••••••••••••'}
+              </span>
               <button
                 type="button"
-                onClick={handleCopy}
-                className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-primary-foreground transition hover:bg-primary/80"
-                aria-label={t('lobby.copy')}
+                onClick={() => setIsUrlVisible(!isUrlVisible)}
+                className="flex-shrink-0 text-muted-foreground transition hover:text-foreground"
+                aria-label={isUrlVisible ? t('lobby.urlHide') : t('lobby.urlShow')}
               >
-                {isCopied ? <Check className="h-5 w-5" /> : <Copy className="h-5 w-5" />}
+                {isUrlVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-primary-foreground transition hover:bg-primary/80"
+              aria-label={t('lobby.copy')}
+            >
+              {isCopied ? <Check className="h-5 w-5" /> : <Copy className="h-5 w-5" />}
+            </button>
           </div>
-
-          {/* 준비 버튼 (참가 유저만) */}
-          {currentPlayer && !isCurrentUserHost && (
-            <div className="mt-6">
-              <button
-                type="button"
-                onClick={handleToggleReady}
-                disabled={isTogglingReady}
-                className={`w-full rounded-full px-8 py-3 text-base font-semibold transition ${
-                  currentPlayer.isReady
-                    ? 'border border-success/40 bg-success/10 text-success hover:bg-success/20'
-                    : 'border border-warning/40 bg-warning/10 text-warning hover:bg-warning/20'
-                } disabled:cursor-not-allowed disabled:opacity-50`}
-              >
-                {isTogglingReady
-                  ? t('lobby.processing')
-                  : currentPlayer.isReady
-                    ? t('lobby.readyCancel')
-                    : t('lobby.readyToggle')}
-              </button>
-            </div>
-          )}
-
-          {/* 게임 시작 버튼 (호스트만) */}
-          {isCurrentUserHost && (
-            <div className="mt-6 flex flex-col gap-2">
-              <button
-                type="button"
-                onClick={handleStart}
-                disabled={!isAllGuestsReady || isStarting || guestPlayers.length < 1}
-                className="w-full rounded-full border border-transparent bg-primary px-8 py-3 text-base font-semibold text-primary-foreground shadow-neon transition hover:bg-primary/80 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-muted-foreground"
-              >
-                {isStarting ? t('lobby.starting') : t('lobby.startGame')}
-              </button>
-              {!isAllGuestsReady && (
-                <p className="text-center text-xs text-muted-foreground">
-                  {t('lobby.startWaiting')}
-                </p>
-              )}
-            </div>
-          )}
         </div>
+
+        {/* 준비 버튼 (참가 유저만) */}
+        {currentPlayer && !isCurrentUserHost && (
+          <div className="mt-6">
+            <button
+              type="button"
+              onClick={handleToggleReady}
+              disabled={isTogglingReady}
+              className={`w-full rounded-full px-8 py-3 text-base font-semibold transition ${
+                currentPlayer.isReady
+                  ? 'border border-success/40 bg-success/10 text-success hover:bg-success/20'
+                  : 'border border-warning/40 bg-warning/10 text-warning hover:bg-warning/20'
+              } disabled:cursor-not-allowed disabled:opacity-50`}
+            >
+              {isTogglingReady
+                ? t('lobby.processing')
+                : currentPlayer.isReady
+                  ? t('lobby.readyCancel')
+                  : t('lobby.readyToggle')}
+            </button>
+          </div>
+        )}
+
+        {/* 게임 시작 버튼 (호스트만) */}
+        {isCurrentUserHost && (
+          <div className="mt-6 flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={handleStart}
+              disabled={!isAllGuestsReady || isStarting || guestPlayers.length < 1}
+              className="w-full rounded-full border border-transparent bg-primary px-8 py-3 text-base font-semibold text-primary-foreground shadow-neon transition hover:bg-primary/80 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-muted-foreground"
+            >
+              {isStarting ? t('lobby.starting') : t('lobby.startGame')}
+            </button>
+            {!isAllGuestsReady && (
+              <p className="text-center text-xs text-muted-foreground">{t('lobby.startWaiting')}</p>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* 이름 수정 다이얼로그 */}
       <Dialog open={isNameEditDialogOpen} onOpenChange={setIsNameEditDialogOpen}>
@@ -1150,11 +1165,11 @@ export function LobbyPage() {
                     return
                   }
                   // 조합 완료 후에도 입력은 자유롭게 허용 (검증은 별도로)
-                  // 최대 12자 제한만 적용
-                  if (value.length <= 12) {
+                  // 최대 길이 제한만 적용
+                  if (value.length <= NAME_MAX_LENGTH) {
                     setNewPlayerName(value)
                   } else {
-                    setNewPlayerName(value.slice(0, 12))
+                    setNewPlayerName(value.slice(0, NAME_MAX_LENGTH))
                   }
                 }}
                 onCompositionStart={() => {
@@ -1166,7 +1181,7 @@ export function LobbyPage() {
                 placeholder={t('lobby.playerNamePlaceholder', {
                   defaultValue: '플레이어 이름',
                 })}
-                maxLength={12}
+                maxLength={NAME_MAX_LENGTH}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     handleSaveName()
@@ -1179,7 +1194,7 @@ export function LobbyPage() {
                 )}
               />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-                {Math.min(newPlayerName.length, 12)}/12
+                {Math.min(newPlayerName.length, NAME_MAX_LENGTH)}/{NAME_MAX_LENGTH}
               </span>
             </div>
             {nameError && <p className="mt-2 text-sm text-destructive">{nameError}</p>}
@@ -1188,19 +1203,12 @@ export function LobbyPage() {
             </p>
           </div>
           <DialogFooter className="!flex-row justify-end gap-2">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setIsNameEditDialogOpen(false)
-                setEditingPlayerId(null)
-                setNewPlayerName('')
-              }}
-            >
+            <Button variant="outline" onClick={closeNameEditDialog}>
               {t('common.cancel', { defaultValue: '취소' })}
             </Button>
             <Button
               onClick={handleSaveName}
-              disabled={!newPlayerName.trim() || !isValidName(newPlayerName.trim())}
+              disabled={!newPlayerName.trim() || !validatePlayerName(newPlayerName.trim())}
             >
               {t('common.save', { defaultValue: '저장' })}
             </Button>

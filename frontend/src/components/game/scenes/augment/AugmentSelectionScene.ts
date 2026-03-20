@@ -20,6 +20,17 @@ import { createRoundedButton, type RoundedButtonController } from '../../ui/crea
 import RouletteAnimator from './modules/RouletteAnimator'
 import { createAugmentCardContent } from './modules/augmentCardRenderer'
 
+const AUGMENT_SELECTION_SCENE_KEY = 'AugmentSelectionScene'
+const DEFAULT_MAX_REROLLS = 3
+const DEFAULT_SHOW_TAP_TO_START = false
+const AUGMENT_SCENE_FONT_FAMILY = 'NeoDunggeunmo'
+const AUGMENT_OVERLAY_DEPTH = 2000
+const ESCAPE_KEYDOWN_EVENT = 'keydown-ESC'
+const POINTER_DOWN_EVENT = 'pointerdown'
+const CARD_ENTRY_TWEEN_DURATION_MS = 250
+const CARD_ENTRY_DELAY_STEP_MS = 50
+const HIDDEN_AUGMENT_DEFAULT_DELAY_STEP_MS = 200
+
 /**
  * 증강 선택 Scene
  * 룰렛(등급 연출) 이후에 3장의 증강 카드 중 하나를 고르는 화면이다.
@@ -82,8 +93,8 @@ export default class AugmentSelectionScene extends Phaser.Scene {
 
   // 상태 필드 (리롤/선택/연출 상태)
   private rarity: AugmentRarity = 'common'
-  private maxRerolls: number = 3 // 전체 리롤 한도
-  private remainingRerolls: number = 3 // 세트 간 공유되는 남은 리롤 횟수
+  private maxRerolls: number = DEFAULT_MAX_REROLLS // 전체 리롤 한도
+  private remainingRerolls: number = DEFAULT_MAX_REROLLS // 세트 간 공유되는 남은 리롤 횟수
   private rerollCount: number = 0 // 현재 세트에서 사용한 리롤 횟수
   private onSelectCallback?: (augment: Augment, usedRerolls: number) => void
   private onCancelCallback?: () => void
@@ -110,10 +121,10 @@ export default class AugmentSelectionScene extends Phaser.Scene {
   /** 브라우저 자동재생 정책 대응: 첫 클릭 후 슬롯머신 시작용 오버레이 */
   private startOverlay?: Phaser.GameObjects.Container
   /** 첫 라운드 룰렛 이전에만 true → "클릭하여 게임 시작" 오버레이 표시 */
-  private showTapToStart = false
+  private showTapToStart = DEFAULT_SHOW_TAP_TO_START
 
   constructor() {
-    super('AugmentSelectionScene')
+    super(AUGMENT_SELECTION_SCENE_KEY)
     // 게임 시작 시점 언어를 사용한다. (중간 언어 변경은 이 씬에서 고정)
   }
   preload() {
@@ -148,14 +159,14 @@ export default class AugmentSelectionScene extends Phaser.Scene {
     onCardsShown?: () => void
   }) {
     this.rarity = data?.rarity ?? 'common'
-    this.maxRerolls = data?.maxRerolls ?? 3 // 전체 리롤 한도
-    this.remainingRerolls = data?.remainingRerolls ?? data?.maxRerolls ?? 3 // 남은 리롤 횟수
+    this.maxRerolls = data?.maxRerolls ?? DEFAULT_MAX_REROLLS
+    this.remainingRerolls = data?.remainingRerolls ?? data?.maxRerolls ?? DEFAULT_MAX_REROLLS
     this.onSelectCallback = data?.onSelect
     this.onRerollCallback = data?.onReroll
     this.onCancelCallback = data?.onCancel
     this.onPreviewCallback = data?.onPreview
     this.onCardsShownCallback = data?.onCardsShown
-    this.showTapToStart = data?.showTapToStart ?? false
+    this.showTapToStart = data?.showTapToStart ?? DEFAULT_SHOW_TAP_TO_START
 
     this.rerollCount = 0
     this.selectedAugment = null
@@ -199,7 +210,7 @@ export default class AugmentSelectionScene extends Phaser.Scene {
   }
 
   private registerKeyboardShortcuts() {
-    this.input.keyboard?.on('keydown-ESC', () => this.cancelSelection())
+    this.input.keyboard?.on(ESCAPE_KEYDOWN_EVENT, () => this.cancelSelection())
   }
 
   private startSelectionEntryFlow(width: number, height: number) {
@@ -216,7 +227,7 @@ export default class AugmentSelectionScene extends Phaser.Scene {
    * 새로고침 시 사운드가 사용자 제스처 없이 막히는 것을 방지.
    */
   private showTapToStartOverlay(width: number, height: number) {
-    const overlay = this.add.container(0, 0).setDepth(2000)
+    const overlay = this.add.container(0, 0).setDepth(AUGMENT_OVERLAY_DEPTH)
     this.startOverlay = overlay
 
     const bg = new Phaser.GameObjects.Graphics(this)
@@ -226,7 +237,7 @@ export default class AugmentSelectionScene extends Phaser.Scene {
 
     const hint = this.add
       .text(width / 2, height / 2, i18next.t('game.tapToStartRoulette'), {
-        fontFamily: 'NeoDunggeunmo',
+        fontFamily: AUGMENT_SCENE_FONT_FAMILY,
         fontSize: '28px',
         color: '#ffffff',
         fontStyle: 'bold',
@@ -239,7 +250,7 @@ export default class AugmentSelectionScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true })
     overlay.add(hitArea)
 
-    hitArea.once('pointerdown', () => {
+    hitArea.once(POINTER_DOWN_EVENT, () => {
       this.startOverlay?.destroy()
       this.startOverlay = undefined
       this.startSlotMachineAnimation(width, height)
@@ -252,7 +263,7 @@ export default class AugmentSelectionScene extends Phaser.Scene {
     const up = AugmentSelectionScene.AUGMENT_UI_UP_OFFSET
     const title = this.add
       .text(width / 2, height * 0.235 - up, i18next.t('game.augmentSelection'), {
-        fontFamily: 'NeoDunggeunmo',
+        fontFamily: AUGMENT_SCENE_FONT_FAMILY,
         fontSize: '36px',
         color: '#ffffff',
         fontStyle: 'bold',
@@ -294,8 +305,8 @@ export default class AugmentSelectionScene extends Phaser.Scene {
       alpha: 1,
       scaleX: 1,
       scaleY: 1,
-      duration: 250,
-      delay: index * 50,
+      duration: CARD_ENTRY_TWEEN_DURATION_MS,
+      delay: index * CARD_ENTRY_DELAY_STEP_MS,
       ease: 'Back.easeOut',
     })
   }
@@ -308,7 +319,9 @@ export default class AugmentSelectionScene extends Phaser.Scene {
     fadeIn: boolean,
   ) {
     if (augment.rarity !== 'hidden') return
-    const delay = fadeIn ? index * 50 : index * 200
+    const delay = fadeIn
+      ? index * CARD_ENTRY_DELAY_STEP_MS
+      : index * HIDDEN_AUGMENT_DEFAULT_DELAY_STEP_MS
     this.createHiddenAugmentAnimation(cardX, cardY, delay)
   }
 

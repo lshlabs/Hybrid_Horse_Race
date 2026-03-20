@@ -2,6 +2,12 @@ import type { Augment, SpecialAbilityType, Stats } from './types-core'
 
 // HorseCore 안에서 쓰는 "상태 갱신 로직만" 분리한 helper 모음
 // 계산 규칙을 클래스 밖으로 빼서 서버/클라 테스트/재사용이 쉬우게 만든다.
+const INITIAL_RANK = 999
+const LAST_SPURT_PROGRESS_BASE = 1.0
+const LAST_SPURT_PROGRESS_SCALE = 0.2
+const OVERTAKE_STAMINA_RECOVERY = 3
+const ESCAPE_CRISIS_TRIGGER_RANK = 4
+
 export function applyStatAugments(baseStats: Stats, augments: Augment[]): Stats {
   const result = { ...baseStats }
   for (const augment of augments) {
@@ -27,7 +33,8 @@ export function applySpecialAbilityToState(
   if (abilityType === 'lastSpurt') {
     return {
       ...state,
-      lastSpurtTriggerProgress: 1.0 - (abilityValue / 10) * 0.2,
+      lastSpurtTriggerProgress:
+        LAST_SPURT_PROGRESS_BASE - (abilityValue / 10) * LAST_SPURT_PROGRESS_SCALE,
     }
   }
   if (abilityType === 'overtake') {
@@ -70,7 +77,7 @@ export type HorseRankUpdateResult = {
 
 export function applyHorseRankUpdate(state: HorseRankUpdateState, rank: number): HorseRankUpdateResult {
   // 첫 업데이트는 "이전 순위" 개념이 없어서 보너스/패널티를 적용하지 않는다.
-  const isInitialUpdate = state.currentRank === 999
+  const isInitialUpdate = state.currentRank === INITIAL_RANK
   const previousRank = state.currentRank
   const currentRank = rank
 
@@ -97,14 +104,18 @@ export function applyHorseRankUpdate(state: HorseRankUpdateState, rank: number):
   if (state.overtakeBonusValue > 0 && currentRank < previousRank) {
     overtakeBonusActive = true
     overtakeCount += 1
-    staminaRecovered = 3
+    staminaRecovered = OVERTAKE_STAMINA_RECOVERY
     stamina = Math.min(state.maxStamina, stamina + staminaRecovered)
   }
 
   let escapeCrisisActive = false
   let escapeCrisisUsed = state.escapeCrisisUsed
   // 위기탈출은 특정 조건에서 한 번만 켜진다.
-  if (state.escapeCrisisValue > 0 && !escapeCrisisUsed && currentRank >= 4) {
+  if (
+    state.escapeCrisisValue > 0 &&
+    !escapeCrisisUsed &&
+    currentRank >= ESCAPE_CRISIS_TRIGGER_RANK
+  ) {
     escapeCrisisActive = true
     escapeCrisisUsed = true
   }

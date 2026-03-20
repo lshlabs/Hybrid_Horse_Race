@@ -11,6 +11,12 @@ export interface PositionToProgressOptions {
 const DEFAULT_OPTIONS: Required<PositionToProgressOptions> = {
   capAtOne: true,
 }
+const MIN_PROGRESS = 0
+const MAX_PROGRESS = 1
+
+function clampProgress(progress: number): number {
+  return Math.max(MIN_PROGRESS, Math.min(MAX_PROGRESS, progress))
+}
 
 /**
  * 시뮬레이션 position(미터)을 진행률 progress로 변환
@@ -27,7 +33,7 @@ export function positionToProgress(
   const capAtOne = options?.capAtOne ?? DEFAULT_OPTIONS.capAtOne
   let progress = trackLengthM > 0 ? position / trackLengthM : 0
   if (capAtOne) {
-    progress = Math.max(0, Math.min(1, progress))
+    progress = clampProgress(progress)
   }
   return progress
 }

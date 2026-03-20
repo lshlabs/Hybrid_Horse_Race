@@ -1,4 +1,5 @@
 const ROOM_JOIN_TOKEN_KEY = 'hybrid-horse-race-room-join-tokens'
+const TOKEN_EXPIRY_BUFFER_MS = 30_000
 
 interface StoredRoomJoinToken {
   joinToken: string
@@ -7,18 +8,53 @@ interface StoredRoomJoinToken {
 
 type RoomJoinTokenMap = Record<string, StoredRoomJoinToken>
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function sanitizeTokenMap(input: unknown): RoomJoinTokenMap {
+  if (!isRecord(input)) {
+    return {}
+  }
+
+  return Object.entries(input).reduce<RoomJoinTokenMap>((acc, [roomId, value]) => {
+    if (!isRecord(value)) {
+      return acc
+    }
+    const joinToken = value.joinToken
+    const expiresAtMillis = value.expiresAtMillis
+    if (typeof joinToken !== 'string' || joinToken.length === 0) {
+      return acc
+    }
+    if (typeof expiresAtMillis !== 'number' || !Number.isFinite(expiresAtMillis)) {
+      return acc
+    }
+    acc[roomId] = { joinToken, expiresAtMillis }
+    return acc
+  }, {})
+}
+
 function readMap(): RoomJoinTokenMap {
-  const raw = localStorage.getItem(ROOM_JOIN_TOKEN_KEY)
+  let raw: string | null = null
+  try {
+    raw = localStorage.getItem(ROOM_JOIN_TOKEN_KEY)
+  } catch {
+    return {}
+  }
   if (!raw) return {}
   try {
-    return JSON.parse(raw) as RoomJoinTokenMap
+    return sanitizeTokenMap(JSON.parse(raw))
   } catch {
     return {}
   }
 }
 
 function writeMap(map: RoomJoinTokenMap): void {
-  localStorage.setItem(ROOM_JOIN_TOKEN_KEY, JSON.stringify(map))
+  try {
+    localStorage.setItem(ROOM_JOIN_TOKEN_KEY, JSON.stringify(map))
+  } catch {
+    // ignore storage write failures (private mode/quota)
+  }
 }
 
 export function setRoomJoinToken(roomId: string, joinToken: string, expiresAtMillis: number): void {
@@ -36,7 +72,7 @@ export function getRoomJoinToken(roomId: string): string | null {
   const map = readMap()
   const entry = map[roomId]
   if (!entry) return null
-  if (entry.expiresAtMillis <= Date.now() + 30_000) {
+  if (entry.expiresAtMillis <= Date.now() + TOKEN_EXPIRY_BUFFER_MS) {
     delete map[roomId]
     writeMap(map)
     return null

@@ -1,7 +1,5 @@
 import type { ServerRaceEvent, ServerRaceKeyframe } from './response-builders'
 
-// 레거시/보조 경로에서 쓰는 서버 레이스 재생 스크립트 생성기
-// (현재는 shared/race-core buildRaceScript가 주력이고, 이 파일은 호환용 성격이 남아있다.)
 export type ServerHorseStats = {
   Speed: number
   Stamina: number
@@ -18,6 +16,24 @@ type RaceReplayBuilderDefaults = {
   tickIntervalMs: number
 }
 
+const MIN_RATIO_DENOMINATOR = 0.0001
+const DEFAULT_PROFILE_STAT = 10
+const START_ACCEL_BASE = 0.12
+const START_ACCEL_SPREAD = 0.18
+const FATIGUE_START_BASE = 0.55
+const FATIGUE_START_SPREAD = 0.3
+const FATIGUE_FLOOR_BASE = 0.72
+const FATIGUE_FLOOR_SPREAD = 0.18
+const LAST_SPURT_RATIO = 0.78
+const SLOWMO_TRIGGER_RATIO = 0.95
+const MIN_TICK_INTERVAL_MS = 1
+const MIN_FINISH_MS = 1
+const MS_PER_SECOND = 1000
+
+function toFinishMs(timeSec: number): number {
+  return Math.max(MIN_FINISH_MS, Math.round(timeSec * MS_PER_SECOND))
+}
+
 export function createRaceReplayScriptBuilder(defaults: RaceReplayBuilderDefaults) {
   return function buildRaceReplayScript(
     rankings: ReplayRanking[],
@@ -28,35 +44,36 @@ export function createRaceReplayScriptBuilder(defaults: RaceReplayBuilderDefault
     events: ServerRaceEvent[]
     slowmoTriggerMs: number
   } {
-    // rankings(결과 시간) 기준으로 keyframe/events를 재구성하는 단순 버전 replay builder
     const trackLengthM = options?.trackLengthM ?? defaults.trackLengthM
-    const tickIntervalMs = options?.tickIntervalMs ?? defaults.tickIntervalMs
-    const maxTimeMs = Math.max(0, ...rankings.map((entry) => Math.round(entry.time * 1000)))
+    const tickIntervalMs = Math.max(MIN_TICK_INTERVAL_MS, options?.tickIntervalMs ?? defaults.tickIntervalMs)
+    const maxTimeMs = Math.max(0, ...rankings.map((entry) => Math.round(entry.time * MS_PER_SECOND)))
     const keyframes: ServerRaceKeyframe[] = []
     const events: ServerRaceEvent[] = []
 
     const profileProgressMap: Record<string, number[]> = {}
     const profileLastSpurtMs: Record<string, number> = {}
-    // 프로필 스탯이 있으면 초반 가속/후반 지구력 느낌만 간단히 반영한다.
     rankings.forEach((entry) => {
-      const finishMs = Math.max(1, Math.round(entry.time * 1000))
+      const finishMs = toFinishMs(entry.time)
       const tickCount = Math.max(1, Math.ceil(finishMs / tickIntervalMs))
       const profile = playerProfiles?.[entry.playerId]
-      const startPower = ((profile?.Start ?? 10) + (profile?.Power ?? 10)) / 40
-      const endurance = ((profile?.Stamina ?? 10) + (profile?.Guts ?? 10)) / 40
-      const accelDurationRatio = 0.12 + (1 - startPower) * 0.18
-      const fatigueStartRatio = 0.55 + endurance * 0.3
-      const fatigueFloor = 0.72 + endurance * 0.18
+      const startPower =
+        ((profile?.Start ?? DEFAULT_PROFILE_STAT) + (profile?.Power ?? DEFAULT_PROFILE_STAT)) / 40
+      const endurance =
+        ((profile?.Stamina ?? DEFAULT_PROFILE_STAT) + (profile?.Guts ?? DEFAULT_PROFILE_STAT)) / 40
+      const accelDurationRatio = START_ACCEL_BASE + (1 - startPower) * START_ACCEL_SPREAD
+      const fatigueStartRatio = FATIGUE_START_BASE + endurance * FATIGUE_START_SPREAD
+      const fatigueFloor = FATIGUE_FLOOR_BASE + endurance * FATIGUE_FLOOR_SPREAD
 
       const weights: number[] = []
       for (let tick = 0; tick <= tickCount; tick++) {
         const progress = tick / tickCount
         let pace = 1
         if (progress < accelDurationRatio) {
-          const t = progress / Math.max(0.0001, accelDurationRatio)
+          const t = progress / Math.max(MIN_RATIO_DENOMINATOR, accelDurationRatio)
           pace = 0.45 + 0.55 * t * t
         } else if (progress > fatigueStartRatio) {
-          const t = (progress - fatigueStartRatio) / Math.max(0.0001, 1 - fatigueStartRatio)
+          const t =
+            (progress - fatigueStartRatio) / Math.max(MIN_RATIO_DENOMINATOR, 1 - fatigueStartRatio)
           pace = 1 - (1 - fatigueFloor) * Math.min(1, t)
         }
         weights.push(pace)
@@ -71,13 +88,12 @@ export function createRaceReplayScriptBuilder(defaults: RaceReplayBuilderDefault
 
       const total = cumulative[cumulative.length - 1] || 1
       profileProgressMap[entry.playerId] = cumulative.map((value) => value / total)
-      profileLastSpurtMs[entry.playerId] = Math.max(0, Math.floor(finishMs * 0.78))
+      profileLastSpurtMs[entry.playerId] = Math.max(0, Math.floor(finishMs * LAST_SPURT_RATIO))
     })
 
-    // 우승자 기준 95% 지점에 slowmoTrigger 이벤트를 넣는다.
     const winner = rankings.find((entry) => entry.position === 1)
-    const winnerFinishMs = winner ? Math.round(winner.time * 1000) : maxTimeMs
-    const slowmoTriggerMs = Math.max(0, Math.round(winnerFinishMs * 0.95))
+    const winnerFinishMs = winner ? Math.round(winner.time * MS_PER_SECOND) : maxTimeMs
+    const slowmoTriggerMs = Math.max(0, Math.round(winnerFinishMs * SLOWMO_TRIGGER_RATIO))
     events.push({
       id: `slowmo-${slowmoTriggerMs}`,
       type: 'slowmoTrigger',
@@ -86,7 +102,6 @@ export function createRaceReplayScriptBuilder(defaults: RaceReplayBuilderDefault
 
     const previousRankByPlayer: Record<string, number> = {}
 
-    // tick 간격으로 전체 타임라인을 돌면서 positions/keyframes/events를 만든다.
     for (let elapsedMs = 0; elapsedMs <= maxTimeMs + tickIntervalMs; elapsedMs += tickIntervalMs) {
       const positions: Record<string, number> = {}
       const speeds: Record<string, number> = {}
@@ -94,7 +109,7 @@ export function createRaceReplayScriptBuilder(defaults: RaceReplayBuilderDefault
       const finished: Record<string, boolean> = {}
 
       rankings.forEach((entry) => {
-        const finishMs = Math.max(1, Math.round(entry.time * 1000))
+        const finishMs = toFinishMs(entry.time)
         const ratio = Math.max(0, Math.min(1, elapsedMs / finishMs))
         const progressCurve = profileProgressMap[entry.playerId]
         let progress = ratio
@@ -112,7 +127,8 @@ export function createRaceReplayScriptBuilder(defaults: RaceReplayBuilderDefault
 
         const remainingRatio = Math.max(0, 1 - progress)
         const profile = playerProfiles?.[entry.playerId]
-        const staminaLossFactor = 0.85 + (1 - (profile?.Stamina ?? 10) / 20) * 0.35
+        const staminaLossFactor =
+          0.85 + (1 - (profile?.Stamina ?? DEFAULT_PROFILE_STAT) / 20) * 0.35
         const staminaValue = Math.max(0, 100 - (1 - remainingRatio) * 100 * staminaLossFactor)
         stamina[entry.playerId] = Number(staminaValue.toFixed(2))
 
@@ -167,7 +183,7 @@ export function createRaceReplayScriptBuilder(defaults: RaceReplayBuilderDefault
         const previousKeyframe = keyframes[keyframes.length - 1]
         Object.keys(positions).forEach((playerId) => {
           const delta = Math.max(0, positions[playerId] - (previousKeyframe.positions[playerId] ?? 0))
-          speeds[playerId] = Number((delta / (tickIntervalMs / 1000)).toFixed(4))
+          speeds[playerId] = Number((delta / (tickIntervalMs / MS_PER_SECOND)).toFixed(4))
         })
       } else {
         Object.keys(positions).forEach((playerId) => {

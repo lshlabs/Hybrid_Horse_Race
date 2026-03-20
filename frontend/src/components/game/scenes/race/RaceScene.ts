@@ -109,6 +109,14 @@ const AUTHORITATIVE_VISUAL_FINISH_FALLBACK_MS = 1200
 const FINAL_RESULT_BACKFILL_RETRY_MAX = 3
 const RACE_START_BOOTSTRAP_MIN_DURATION_MS = 700
 const RACE_START_BOOTSTRAP_MAX_WAIT_MS = 3000
+const RACE_SCENE_KEY = 'RaceScene'
+const AUGMENT_SELECTION_SCENE_KEY = 'AugmentSelectionScene'
+const RACE_RESULT_SCENE_KEY = 'RaceResultScene'
+const ROOM_STATUS_RACING: Room['status'] = 'racing'
+const ROOM_STATUS_AUGMENT_SELECTION: Room['status'] = 'augmentSelection'
+const DEFAULT_PLAYER_COUNT = 8
+const DEFAULT_ROUND_COUNT = 3
+const DEFAULT_REROLL_LIMIT = 3
 const RACE_SCENE_EVENTS = {
   FINISH_SEQUENCE_SLOWMO: 'finish-sequence-slowmo',
   FINISH_SEQUENCE_SLOWMO_RESTORE: 'finish-sequence-slowmo-restore',
@@ -172,7 +180,7 @@ export default class RaceScene extends Phaser.Scene {
 
   // 증강 관련
   private selectedAugments: Augment[] = []
-  private remainingRerolls = 3 // 현재 플레이어 남은 리롤 횟수
+  private remainingRerolls = DEFAULT_REROLL_LIMIT // 현재 플레이어 남은 리롤 횟수
   private augmentSelectionActive = false
 
   // Firebase 데이터 저장
@@ -323,7 +331,7 @@ export default class RaceScene extends Phaser.Scene {
   }
 
   constructor() {
-    super('RaceScene')
+    super(RACE_SCENE_KEY)
     this.dataSync = new RaceDataSync({
       scene: this,
       onDataApplied: (data) => this.applyGameData(data),
@@ -439,7 +447,7 @@ export default class RaceScene extends Phaser.Scene {
   /** 말, HUD, 진행바 생성 및 초기 HUD 업데이트 */
   private createHorsesAndHUD() {
     const gameHeight = this.gameAreaHeight
-    const playerCount = this.players?.length || 8
+    const playerCount = this.getResolvedPlayerCount()
     const playersFromData = this.data.get('players') as Player[] | undefined
     const playerNames =
       playersFromData?.map((p, index) => p.name || `Horse_${index + 1}`) ||
@@ -667,7 +675,7 @@ export default class RaceScene extends Phaser.Scene {
         !shouldRequestStart &&
         !this.isServerRacePrepared &&
         this.isCurrentPlayerHost() &&
-        this.room.status === 'racing'
+        this.room.status === ROOM_STATUS_RACING
       ) {
         this.isServerRacePrepared = true
         // host만 prepareRace를 호출해서 서버 스크립트를 먼저 만든다.
@@ -683,7 +691,7 @@ export default class RaceScene extends Phaser.Scene {
         shouldRequestStart &&
         !this.isServerRaceRequested &&
         this.isCurrentPlayerHost() &&
-        this.room.status === 'racing'
+        this.room.status === ROOM_STATUS_RACING
       ) {
         this.isServerRaceRequested = true
         // 실제 출발 타이밍에 host가 startRace를 호출해서 startedAt을 확정한다.
@@ -923,7 +931,7 @@ export default class RaceScene extends Phaser.Scene {
       },
     })
 
-    if (this.room?.status === 'racing') {
+    if (this.room?.status === ROOM_STATUS_RACING) {
       this.resumeRaceAfterAugmentSelectionWait()
     }
   }
@@ -998,15 +1006,19 @@ export default class RaceScene extends Phaser.Scene {
 
   private ensureAugmentSelectionSceneRegistered() {
     const scenePlugin = this.scene
-    if (!scenePlugin.get('AugmentSelectionScene')) {
-      scenePlugin.add('AugmentSelectionScene', AugmentSelectionScene as typeof Phaser.Scene, false)
+    if (!scenePlugin.get(AUGMENT_SELECTION_SCENE_KEY)) {
+      scenePlugin.add(
+        AUGMENT_SELECTION_SCENE_KEY,
+        AugmentSelectionScene as typeof Phaser.Scene,
+        false,
+      )
     }
   }
 
   private stopExistingAugmentSelectionSceneIfActive() {
     const scenePlugin = this.scene
-    if (scenePlugin.isActive('AugmentSelectionScene')) {
-      scenePlugin.stop('AugmentSelectionScene')
+    if (scenePlugin.isActive(AUGMENT_SELECTION_SCENE_KEY)) {
+      scenePlugin.stop(AUGMENT_SELECTION_SCENE_KEY)
     }
   }
 
@@ -1016,7 +1028,7 @@ export default class RaceScene extends Phaser.Scene {
     totalRerollLimit: number
   }) {
     this.ensureAugmentSelectionSceneRegistered()
-    this.scene.launch('AugmentSelectionScene', {
+    this.scene.launch(AUGMENT_SELECTION_SCENE_KEY, {
       rarity: params.rarity,
       augmentChoices: params.augmentChoices,
       maxRerolls: params.totalRerollLimit,
@@ -1058,7 +1070,7 @@ export default class RaceScene extends Phaser.Scene {
         // 서버 권한 모드에서는 로컬 fallback으로 진행하지 않고
         // 다시 RaceScene으로 복귀시켜 상태 오염을 방지한다.
         this.removeAugmentDimOverlay()
-        this.scene.stop('AugmentSelectionScene')
+        this.scene.stop(AUGMENT_SELECTION_SCENE_KEY)
         return
       }
 
@@ -1066,7 +1078,7 @@ export default class RaceScene extends Phaser.Scene {
       resolvedAugments = response.availableAugments
     }
 
-    const totalRerollLimit = this.room?.rerollLimit ?? 3
+    const totalRerollLimit = this.room?.rerollLimit ?? DEFAULT_REROLL_LIMIT
     this.launchAugmentSelectionScene({
       rarity: resolvedRarity,
       augmentChoices: resolvedAugments,
@@ -1762,15 +1774,15 @@ export default class RaceScene extends Phaser.Scene {
 
     const scenePlugin = this.scene
     // 결과창을 바로 띄워서 집계 오버레이가 사라질 때 맵 배경이 잠깐 비치지 않게 한다.
-    if (!scenePlugin.get('RaceResultScene')) {
-      scenePlugin.add('RaceResultScene', RaceResultScene as typeof Phaser.Scene, false)
+    if (!scenePlugin.get(RACE_RESULT_SCENE_KEY)) {
+      scenePlugin.add(RACE_RESULT_SCENE_KEY, RaceResultScene as typeof Phaser.Scene, false)
     }
 
-    const playerCount = this.players?.length ?? 8
-    const roundCount = this.room?.roundCount ?? 3
+    const playerCount = this.getResolvedPlayerCount()
+    const roundCount = this.room?.roundCount ?? DEFAULT_ROUND_COUNT
     const isLastRound = this.currentSet >= roundCount
 
-    scenePlugin.launch('RaceResultScene', {
+    scenePlugin.launch(RACE_RESULT_SCENE_KEY, {
       rankings,
       playerHorseIndex: this.playerHorseIndex,
       playerCount,
@@ -1815,7 +1827,7 @@ export default class RaceScene extends Phaser.Scene {
     }
     const setIndex = this.currentSet
 
-    if (this.isCurrentPlayerHost() && this.room.status === 'racing') {
+    if (this.isCurrentPlayerHost() && this.room.status === ROOM_STATUS_RACING) {
       try {
         await prepareRace({
           roomId: this.roomId,
@@ -1913,7 +1925,7 @@ export default class RaceScene extends Phaser.Scene {
     this.resetNextSetTransitionWaitingState()
 
     this.dispatchRaceFinalResultEvent()
-    this.scene.stop('RaceResultScene')
+    this.scene.stop(RACE_RESULT_SCENE_KEY)
   }
 
   private dispatchRaceFinalResultEvent() {
@@ -2320,7 +2332,7 @@ export default class RaceScene extends Phaser.Scene {
 
     if (typeof targetSet === 'number') {
       this.currentSet = targetSet
-    } else if (this.room?.status === 'augmentSelection' && this.room?.currentSet) {
+    } else if (this.room?.status === ROOM_STATUS_AUGMENT_SELECTION && this.room?.currentSet) {
       this.currentSet = this.room.currentSet
     }
     this.updateHUDInitial()
@@ -2480,11 +2492,16 @@ export default class RaceScene extends Phaser.Scene {
   }
 
   private getRemainingRerollsForCurrentPlayer(): number {
-    const totalLimit = this.room?.rerollLimit ?? 3
+    const totalLimit = this.room?.rerollLimit ?? DEFAULT_REROLL_LIMIT
     if (!this.players || !this.playerId) return totalLimit
     const me = this.players.find((player) => player.id === this.playerId)
     const used = me?.rerollUsed ?? 0
     return Math.max(0, totalLimit - used)
+  }
+
+  private getResolvedPlayerCount(): number {
+    const candidate = this.players?.length
+    return candidate && candidate > 0 ? candidate : DEFAULT_PLAYER_COUNT
   }
 
   private getRuntimeState(): RaceRuntimeState {

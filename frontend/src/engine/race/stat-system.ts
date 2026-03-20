@@ -34,6 +34,15 @@ import {
   START_DELAY_MAX_SEC,
 } from './constants'
 
+const INITIAL_STAT_VALUE = 8
+const TOTAL_INITIAL_STAT_POINTS = 80
+const STAT_COUNT = 6
+const MAX_RANDOM_STAT_VALUE = 20
+const POWER_START_BLEND_DIVISOR = 2
+const MIN_TARGET_ACCEL_TIME_SEC = 0.1
+const SPEED_PENALTY_BASE = 1.0
+const SPEED_PENALTY_SCALE = 0.1
+
 /**
  * 유틸리티 함수
  */
@@ -72,16 +81,15 @@ export const STAT_NAMES: StatName[] = ['Speed', 'Stamina', 'Power', 'Guts', 'Sta
  */
 export function generateRandomStats(): Stats {
   const stats: Stats = {
-    Speed: 8,
-    Stamina: 8,
-    Power: 8,
-    Guts: 8,
-    Start: 8,
-    Luck: 8,
+    Speed: INITIAL_STAT_VALUE,
+    Stamina: INITIAL_STAT_VALUE,
+    Power: INITIAL_STAT_VALUE,
+    Guts: INITIAL_STAT_VALUE,
+    Start: INITIAL_STAT_VALUE,
+    Luck: INITIAL_STAT_VALUE,
   }
 
-  let remaining = 80 - 6 * 8
-  const MAX_STAT = 20
+  let remaining = TOTAL_INITIAL_STAT_POINTS - STAT_COUNT * INITIAL_STAT_VALUE
   const incrementableStatNames = [...STAT_NAMES]
 
   while (remaining > 0 && incrementableStatNames.length > 0) {
@@ -91,7 +99,7 @@ export function generateRandomStats(): Stats {
     stats[key] += 1
     remaining -= 1
 
-    if (stats[key] >= MAX_STAT) {
+    if (stats[key] >= MAX_RANDOM_STAT_VALUE) {
       incrementableStatNames.splice(candidateIndex, 1)
     }
   }
@@ -214,10 +222,11 @@ export function calcTargetAccelTime(powerStat: number, startStat: number): numbe
   const tPower = normalizeStatNonLinear(powerStat)
   const tStart = normalizeStatNonLinear(startStat)
   // Power/Start 정규화 값 합으로 가속 시간 범위를 줄인다.
-  const timeRange = (TARGET_ACCEL_TIME_MAX_SEC - TARGET_ACCEL_TIME_MIN_SEC) / 2.0
+  const timeRange =
+    (TARGET_ACCEL_TIME_MAX_SEC - TARGET_ACCEL_TIME_MIN_SEC) / POWER_START_BLEND_DIVISOR
   const targetAccelTime = TARGET_ACCEL_TIME_MAX_SEC - (tPower + tStart) * timeRange
   // 너무 작은 값만 막고 나머지는 차이가 나게 둔다.
-  return Math.max(0.1, targetAccelTime)
+  return Math.max(MIN_TARGET_ACCEL_TIME_SEC, targetAccelTime)
 }
 
 /**
@@ -269,5 +278,5 @@ export function calcSpeedNormalized(speedStat: number): number {
  * - Speed가 높을수록 추가 스태미나 소모
  */
 export function calcSpeedPenalty(tSpeedNormalized: number): number {
-  return 1.0 + 0.1 * tSpeedNormalized // Speed 20일 때 10% 추가 소모
+  return SPEED_PENALTY_BASE + SPEED_PENALTY_SCALE * tSpeedNormalized // Speed 20일 때 10% 추가 소모
 }

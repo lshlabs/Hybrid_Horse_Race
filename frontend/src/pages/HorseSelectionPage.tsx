@@ -30,7 +30,7 @@ import {
 } from '../components/ui/chart'
 import { generateRandomStats, normalizeStatNonLinear } from '../engine/race/stat-system'
 import { DEFAULT_MAX_STAT, DEFAULT_SATURATION_RATE } from '../engine/race/constants'
-import type { Stats } from '../engine/race/types'
+import type { StatName, Stats } from '../engine/race/types'
 import { formatNickname, type NicknameData } from '../utils/nickname-generator'
 import { useRoom, type Player } from '../hooks/useRoom'
 import { selectHorse as selectHorseCallable } from '../lib/firebase-functions'
@@ -76,6 +76,45 @@ interface HorseConfirmParams {
   roomJoinToken: string
 }
 
+const HORSE_STATS: Array<{
+  key: StatName
+  shortLabelKey: string
+  fullLabelKey: string
+}> = [
+  { key: 'Speed', shortLabelKey: 'statsShort.speed', fullLabelKey: 'stats.speed' },
+  { key: 'Stamina', shortLabelKey: 'statsShort.stamina', fullLabelKey: 'stats.stamina' },
+  { key: 'Power', shortLabelKey: 'statsShort.power', fullLabelKey: 'stats.power' },
+  { key: 'Guts', shortLabelKey: 'statsShort.guts', fullLabelKey: 'stats.guts' },
+  { key: 'Start', shortLabelKey: 'statsShort.start', fullLabelKey: 'stats.start' },
+  { key: 'Luck', shortLabelKey: 'statsShort.luck', fullLabelKey: 'stats.luck' },
+]
+
+const BAR_VIEW_MAX_STAT = 20
+const CANDIDATE_COUNT = 3
+const UNIQUE_NAME_MAX_ATTEMPTS = 10
+const DEV_SELECTED_HORSE_SYNC_INTERVAL_MS = 500
+const ROOM_STATUS_WAITING = 'waiting'
+const ROOM_STATUS_AUGMENT_SELECTION = 'augmentSelection'
+const ROOM_STATUS_RACING = 'racing'
+const ROOM_STATUS_SET_RESULT = 'setResult'
+const ROOM_STATUS_FINISHED = 'finished'
+const STAT_COLOR_THRESHOLDS = {
+  low: 11,
+  medium: 14,
+  high: 18,
+} as const
+
+function sumStats(stats: Stats): number {
+  return HORSE_STATS.reduce((total, stat) => total + stats[stat.key], 0)
+}
+
+function getStatColor(value: number): string {
+  if (value < STAT_COLOR_THRESHOLDS.low) return '#9ca3af'
+  if (value < STAT_COLOR_THRESHOLDS.medium) return '#10b981'
+  if (value < STAT_COLOR_THRESHOLDS.high) return '#eab308'
+  return '#f87171'
+}
+
 /**
  * 새로운 말 후보 3마리 생성
  * 이름은 중복되지 않게 뽑고, 능력치는 랜덤 생성 함수를 사용한다.
@@ -84,7 +123,7 @@ function createNewCandidates(): HorseCandidate[] {
   const newCandidates: HorseCandidate[] = []
   const usedNameKeys = new Set<string>()
 
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < CANDIDATE_COUNT; i++) {
     const stats = generateRandomStats()
 
     // 이름이 겹치면 다시 뽑는다. (너무 오래 돌지 않게 시도 횟수 제한)
@@ -94,7 +133,7 @@ function createNewCandidates(): HorseCandidate[] {
       const nameIndex = Math.floor(Math.random() * HORSE_NAME_KEYS.length)
       nameKey = HORSE_NAME_KEYS[nameIndex]
       attempts++
-    } while (usedNameKeys.has(nameKey) && attempts < 10)
+    } while (usedNameKeys.has(nameKey) && attempts < UNIQUE_NAME_MAX_ATTEMPTS)
 
     usedNameKeys.add(nameKey)
 
@@ -139,7 +178,7 @@ function registerDevSelectedHorseSync(params: {
 
   syncSelectedHorse()
   window.addEventListener('storage', handleStorageChange)
-  const interval = setInterval(syncSelectedHorse, 500)
+  const interval = setInterval(syncSelectedHorse, DEV_SELECTED_HORSE_SYNC_INTERVAL_MS)
 
   return () => {
     window.removeEventListener('storage', handleStorageChange)
@@ -150,18 +189,10 @@ function registerDevSelectedHorseSync(params: {
 function buildSelectedHorseFromRealtimePlayer(player: Player | undefined): SavedHorseData | null {
   if (!player?.horseStats) return null
 
-  const totalStats =
-    player.horseStats.Speed +
-    player.horseStats.Stamina +
-    player.horseStats.Power +
-    player.horseStats.Guts +
-    player.horseStats.Start +
-    player.horseStats.Luck
-
   return {
     name: player.name,
     stats: player.horseStats,
-    totalStats,
+    totalStats: sumStats(player.horseStats),
     selectedAt: new Date().toISOString(),
   }
 }
@@ -210,17 +241,21 @@ export function HorseSelectionPage() {
   }
 
   const handleRoomStatusRedirect = (status: string) => {
-    if (status === 'waiting') {
+    if (status === ROOM_STATUS_WAITING) {
       navigateWithRoomAndPlayer('/lobby')
       return
     }
 
-    if (status === 'augmentSelection' || status === 'racing' || status === 'setResult') {
+    if (
+      status === ROOM_STATUS_AUGMENT_SELECTION ||
+      status === ROOM_STATUS_RACING ||
+      status === ROOM_STATUS_SET_RESULT
+    ) {
       navigateWithRoomAndPlayer('/race')
       return
     }
 
-    if (status === 'finished') {
+    if (status === ROOM_STATUS_FINISHED) {
       navigateWithRoomAndPlayer('/race-result')
     }
   }
@@ -282,21 +317,19 @@ export function HorseSelectionPage() {
     setSelectedHorse(nextSelectedHorse)
   }, [playerId, players])
 
-  // 카드 표시/저장 데이터에서 공통으로 쓰는 총합 계산
-  const getTotalStats = (stats: Stats): number => {
-    return stats.Speed + stats.Stamina + stats.Power + stats.Guts + stats.Start + stats.Luck
+  const getRadarChartData = (stats: Stats) => {
+    return HORSE_STATS.map((stat) => ({
+      stat: t(stat.shortLabelKey),
+      value: stats[stat.key],
+    }))
   }
 
-  // 레이더 차트에 바로 넣을 형태로 변환
-  const getRadarChartData = (stats: Stats) => {
-    return [
-      { stat: t('statsShort.speed'), value: stats.Speed },
-      { stat: t('statsShort.stamina'), value: stats.Stamina },
-      { stat: t('statsShort.power'), value: stats.Power },
-      { stat: t('statsShort.guts'), value: stats.Guts },
-      { stat: t('statsShort.start'), value: stats.Start },
-      { stat: t('statsShort.luck'), value: stats.Luck },
-    ]
+  const getBarChartStats = (stats: Stats) => {
+    return HORSE_STATS.map((stat) => ({
+      key: stat.key,
+      label: t(stat.fullLabelKey),
+      value: stats[stat.key],
+    }))
   }
 
   // 레이더 차트 색상 설정
@@ -309,25 +342,11 @@ export function HorseSelectionPage() {
     } satisfies ChartConfig
   }
 
-  // 능력치 숫자 색상 (게임 HUD와 비슷한 기준 사용)
-  const getStatColor = (value: number): string => {
-    if (value < 11) {
-      return '#9ca3af' // 낮은 수치
-    } else if (value < 14) {
-      return '#10b981' // 보통
-    } else if (value < 18) {
-      return '#eab308' // 좋은 편
-    } else {
-      return '#f87171' // 높은 편
-    }
-  }
-
-  // 비선형 정규화가 어떻게 올라가는지 설명용 차트 데이터
   const getStatChartData = () => {
     const data: Array<{ stat: number; normalized: number; linear: number }> = []
     for (let stat = 0; stat <= DEFAULT_MAX_STAT; stat += 1) {
       const normalized = normalizeStatNonLinear(stat, DEFAULT_MAX_STAT, DEFAULT_SATURATION_RATE)
-      const linear = stat / DEFAULT_MAX_STAT // 비교용(선형 기준선)
+      const linear = stat / DEFAULT_MAX_STAT
       data.push({ stat, normalized, linear })
     }
     return data
@@ -354,7 +373,7 @@ export function HorseSelectionPage() {
   }
 
   const buildSavedHorseData = (candidate: HorseCandidate): SavedHorseData => {
-    const totalStats = getTotalStats(candidate.stats)
+    const totalStats = sumStats(candidate.stats)
     return {
       name: t(`horseNames.${candidate.nameKey}`),
       stats: candidate.stats,
@@ -409,7 +428,7 @@ export function HorseSelectionPage() {
             (nicknameDataMap[id] ? formatNickname(nicknameDataMap[id]) : `플레이어 ${id}`)
 
           const randomStats = generateRandomStats()
-          const randomTotalStats = Object.values(randomStats).reduce((sum, val) => sum + val, 0)
+          const randomTotalStats = sumStats(randomStats)
           horsesData[id] = {
             name: playerName,
             stats: randomStats,
@@ -641,41 +660,12 @@ export function HorseSelectionPage() {
                           }}
                         >
                           <div className="grid grid-cols-2 gap-4 w-full mx-auto">
-                            {[
-                              {
-                                key: 'Speed',
-                                label: t('stats.speed'),
-                                value: candidate.stats.Speed,
-                              },
-                              {
-                                key: 'Stamina',
-                                label: t('stats.stamina'),
-                                value: candidate.stats.Stamina,
-                              },
-                              {
-                                key: 'Power',
-                                label: t('stats.power'),
-                                value: candidate.stats.Power,
-                              },
-                              {
-                                key: 'Guts',
-                                label: t('stats.guts'),
-                                value: candidate.stats.Guts,
-                              },
-                              {
-                                key: 'Start',
-                                label: t('stats.start'),
-                                value: candidate.stats.Start,
-                              },
-                              {
-                                key: 'Luck',
-                                label: t('stats.luck'),
-                                value: candidate.stats.Luck,
-                              },
-                            ].map((stat) => {
+                            {getBarChartStats(candidate.stats).map((stat) => {
                               const statColor = getStatColor(stat.value)
-                              const maxStat = 20
-                              const percentage = Math.min((stat.value / maxStat) * 100, 100)
+                              const percentage = Math.min(
+                                (stat.value / BAR_VIEW_MAX_STAT) * 100,
+                                100,
+                              )
 
                               return (
                                 <div key={stat.key} className="space-y-1.5">

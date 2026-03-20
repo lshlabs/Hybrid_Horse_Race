@@ -18,6 +18,27 @@ export interface RoundRankingEntry {
   horseIndex: number
 }
 
+interface HorseRankingContext {
+  horse: HorseSnapshot
+  index: number
+  position: number
+  finished: boolean
+  finishTime: number | null
+  currentTime: number
+}
+
+function compareHorseRanking(a: HorseRankingContext, b: HorseRankingContext): number {
+  if (a.finished !== b.finished) {
+    return a.finished ? -1 : 1
+  }
+  if (a.finished && b.finished) {
+    const aTime = a.finishTime ?? Infinity
+    const bTime = b.finishTime ?? Infinity
+    return aTime - bTime
+  }
+  return b.position - a.position
+}
+
 /**
  * 시뮬레이션 말 목록과 증강/이름 정보로 라운드 순위를 계산 (순수 함수)
  */
@@ -31,7 +52,7 @@ export function computeRoundRankings(
 ): RoundRankingEntry[] {
   const { horseAugmentsByIndex, playerNameByIndex, currentTime } = options
 
-  const withIndex = horses.map((horse, index) => ({
+  const withIndex: HorseRankingContext[] = horses.map((horse, index) => ({
     horse,
     index,
     position: horse.position,
@@ -40,16 +61,7 @@ export function computeRoundRankings(
     currentTime,
   }))
 
-  const sorted = withIndex.slice().sort((a, b) => {
-    if (a.finished && !b.finished) return -1
-    if (!a.finished && b.finished) return 1
-    if (a.finished && b.finished) {
-      const aTime = a.finishTime ?? Infinity
-      const bTime = b.finishTime ?? Infinity
-      return aTime - bTime
-    }
-    return b.position - a.position
-  })
+  const sorted = withIndex.slice().sort(compareHorseRanking)
 
   return sorted.map((result, rankIndex) => ({
     rank: rankIndex + 1,

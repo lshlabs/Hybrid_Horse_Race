@@ -10,6 +10,9 @@ import type { RaceOptions, RaceResult, SnapshotOrder } from './types'
 import { SIM_STEP_SEC, MAX_SIM_TIME_SEC } from './constants'
 import { generateRandomStats } from './stat-system'
 
+const DEFAULT_HORSE_COUNT = 8
+const HORSE_NAME_PREFIX = 'Horse_'
+
 // =========================
 // 순위 스냅샷 유틸
 // =========================
@@ -41,7 +44,7 @@ function buildRankMap(snapshot: SnapshotOrder[] | null): Record<string, number |
  * @returns 레이스 결과 배열 (순위순)
  */
 export function runRace(options: RaceOptions = {}): RaceResult[] {
-  const { numHorses = 8, horses: customHorses } = options
+  const { numHorses = DEFAULT_HORSE_COUNT, horses: customHorses } = options
 
   const horses: Horse[] = []
 
@@ -56,7 +59,7 @@ export function runRace(options: RaceOptions = {}): RaceResult[] {
     // 별도 입력이 없으면 여기서 랜덤 말을 만든다.
     for (let i = 0; i < numHorses; i++) {
       const baseStats = generateRandomStats()
-      const horse = new Horse(`Horse_${i + 1}`, baseStats)
+      const horse = new Horse(`${HORSE_NAME_PREFIX}${i + 1}`, baseStats)
       horse.prepareForRace()
       horses.push(horse)
     }

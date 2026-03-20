@@ -23,6 +23,22 @@ import {
   applyStatAugments,
 } from './horse-logic-core'
 
+const INITIAL_RANK = 999
+const START_ACCEL_ZONE_RATIO = 0.2
+const FATIGUE_ACTIVATION_STAMINA_RATIO = 0.85
+const FATIGUE_CURVE_EXPONENT = 0.8
+
+function applyConditionRollToStats(baseStats: Stats, conditionRoll: number): Stats {
+  return {
+    Speed: baseStats.Speed * (1 + conditionRoll),
+    Stamina: baseStats.Stamina * (1 + conditionRoll),
+    Power: baseStats.Power * (1 + conditionRoll),
+    Guts: baseStats.Guts * (1 + conditionRoll),
+    Start: baseStats.Start * (1 + conditionRoll),
+    Luck: baseStats.Luck,
+  }
+}
+
 // 서버/클라 공용으로 쓰는 "말 1마리" 시뮬레이션 코어
 // 입력 스탯/증강/컨디션을 받아서 레이스 중 상태를 업데이트한다.
 export class HorseCore {
@@ -45,8 +61,8 @@ export class HorseCore {
   lastSpurtActive: boolean = false
   overtakeBonusValue: number = 0
   overtakeCount: number = 0
-  currentRank: number = 999
-  previousRank: number = 999
+  currentRank: number = INITIAL_RANK
+  previousRank: number = INITIAL_RANK
   escapeCrisisValue: number = 0
   escapeCrisisActive: boolean = false
   escapeCrisisUsed: boolean = false
@@ -72,14 +88,7 @@ export class HorseCore {
     this.baseStats = applyStatAugments(rawBaseStats, augments)
     this.conditionRoll = conditionRoll
     this.trackLengthM = trackLengthM
-    this.effectiveStats = {
-      Speed: this.baseStats.Speed * (1 + conditionRoll),
-      Stamina: this.baseStats.Stamina * (1 + conditionRoll),
-      Power: this.baseStats.Power * (1 + conditionRoll),
-      Guts: this.baseStats.Guts * (1 + conditionRoll),
-      Start: this.baseStats.Start * (1 + conditionRoll),
-      Luck: this.baseStats.Luck,
-    }
+    this.effectiveStats = applyConditionRollToStats(this.baseStats, conditionRoll)
 
     augments.forEach((augment) => {
       if (augment.specialAbility && augment.specialAbilityValue != null) {
@@ -128,8 +137,8 @@ export class HorseCore {
     this.escapeCrisisUsed = false
     this.escapeCrisisActive = false
     this.overtakeCount = 0
-    this.currentRank = 999
-    this.previousRank = 999
+    this.currentRank = INITIAL_RANK
+    this.previousRank = INITIAL_RANK
     this.lastSpurtActive = false
   }
 
@@ -170,7 +179,7 @@ export class HorseCore {
     const progress = clamp(this.position / Math.max(1, this.trackLengthM), 0, 1)
     let targetSpeed = this.maxSpeed_ms
     let accel = this.accelFactor
-    if (this.position < this.trackLengthM * 0.2) {
+    if (this.position < this.trackLengthM * START_ACCEL_ZONE_RATIO) {
       accel *= this.startAccelBoost
     }
 
@@ -202,9 +211,9 @@ export class HorseCore {
     let fatigueFactor = 1
     if (!this.lastSpurtActive) {
       const staminaRatio = clamp(this.stamina / this.maxStamina, 0, 1)
-      if (staminaRatio < 0.85) {
-        const x = staminaRatio / 0.85
-        const fatigueCurve = Math.pow(x, 0.8)
+      if (staminaRatio < FATIGUE_ACTIVATION_STAMINA_RATIO) {
+        const x = staminaRatio / FATIGUE_ACTIVATION_STAMINA_RATIO
+        const fatigueCurve = Math.pow(x, FATIGUE_CURVE_EXPONENT)
         fatigueFactor = clamp(
           this.fatigueFloor + (1 - this.fatigueFloor) * fatigueCurve,
           this.fatigueFloor,

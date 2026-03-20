@@ -1,5 +1,5 @@
 import { type ClassValue, clsx } from 'clsx'
 
-export function cn(...inputs: ClassValue[]) {
-  return clsx(inputs)
+export function cn(...inputs: ClassValue[]): string {
+  return clsx(...inputs)
 }

@@ -3,6 +3,8 @@
 // 트랙/좌표/오프셋 상수는 trackConstants.ts 참고.
 // =========================
 
+import { DEFAULT_SIM_STEP_MS } from '../../../../shared/race-core/constants-core'
+
 /**
  * 시뮬레이션 설정
  */
@@ -101,4 +103,3 @@ export const LUCK_ROLL_AT_40_MAX = 0.5 // Luck 40 최대 +50%
  */
 export const DEFAULT_MAX_STAT = 40 // 최대 능력치: 능력치 40에서 정규화 값 1.0
 export const DEFAULT_SATURATION_RATE = 2.0 // 지수 포화율: 높을수록 빠른 포화 (초반 급격, 후반 완만)
-import { DEFAULT_SIM_STEP_MS } from '../../../../shared/race-core/constants-core'

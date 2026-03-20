@@ -27,13 +27,18 @@ import { randomFloatSeeded } from './rng-core'
 
 // 스탯 -> 실제 레이스 파라미터(속도/가속/피로/출발 지연 등) 변환 helper
 export const STAT_NAMES: StatName[] = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Luck']
+const LUCK_BASELINE = 20
+const LUCK_HIGH_RANGE = 40
+const MS_PER_KMH_NUMERATOR = 1000
+const MS_PER_KMH_DENOMINATOR = 3600
+const POWER_START_BLEND_DIVISOR = 2
 
 export function clamp(v: number, min: number, max: number): number {
   return v < min ? min : v > max ? max : v
 }
 
 export function kmhToMs(kmh: number): number {
-  return (kmh * 1000) / 3600
+  return (kmh * MS_PER_KMH_NUMERATOR) / MS_PER_KMH_DENOMINATOR
 }
 
 export function normalizeStatNonLinear(
@@ -50,8 +55,8 @@ export function normalizeStatNonLinear(
 }
 
 export function normalizeLuck(luck: number): number {
-  if (luck <= 20) return luck / 20
-  return 1.0 + (luck - 20) / 40
+  if (luck <= LUCK_BASELINE) return luck / LUCK_BASELINE
+  return 1.0 + (luck - LUCK_BASELINE) / LUCK_HIGH_RANGE
 }
 
 export function rollConditionFromSeed(luck: number, rng: () => number): number {
@@ -99,7 +104,8 @@ export function calcTargetAccelTime(powerStat: number, startStat: number): numbe
   const tStart = normalizeStatNonLinear(startStat)
   return (
     TARGET_ACCEL_TIME_MAX_SEC -
-    ((tPower + tStart) * (TARGET_ACCEL_TIME_MAX_SEC - TARGET_ACCEL_TIME_MIN_SEC)) / 2
+    ((tPower + tStart) * (TARGET_ACCEL_TIME_MAX_SEC - TARGET_ACCEL_TIME_MIN_SEC)) /
+      POWER_START_BLEND_DIVISOR
   )
 }
 

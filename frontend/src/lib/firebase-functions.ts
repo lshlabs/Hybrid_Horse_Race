@@ -1,5 +1,3 @@
-/** Firebase Cloud Functions callable 호출 모음 */
-
 import {
   getFunctions,
   httpsCallable,
@@ -12,6 +10,8 @@ import { getFirebaseApp } from './firebase'
 const FUNCTIONS_REGION = 'asia-northeast3'
 const DEFAULT_FUNCTIONS_EMULATOR_HOST = '127.0.0.1'
 const DEFAULT_FUNCTIONS_EMULATOR_PORT = 5001
+const IS_DEV = import.meta.env.DEV
+const USE_FUNCTIONS_EMULATOR = IS_DEV && import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true'
 
 let functionsInstance: ReturnType<typeof getFunctions> | null = null
 let isEmulatorConnected = false
@@ -25,7 +25,7 @@ function resolveEmulatorHost(envHost?: string): string {
 }
 
 function isFunctionsEmulatorEnabled(): boolean {
-  return import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true'
+  return USE_FUNCTIONS_EMULATOR
 }
 
 function resolveEmulatorPort(rawPort?: string): number {
@@ -41,16 +41,26 @@ function isAlreadyConnectedFunctionsError(error: unknown): boolean {
   )
 }
 
+function logDebug(message: string, context?: Record<string, unknown>): void {
+  if (IS_DEV) {
+    if (context) {
+      console.info(message, context)
+      return
+    }
+    console.info(message)
+  }
+}
+
 function connectFunctionsEmulatorIfNeeded(instance: Functions): void {
   if (!isFunctionsEmulatorEnabled()) {
-    console.log(`✅ Using Firebase Functions in production mode (region: ${FUNCTIONS_REGION})`)
+    logDebug('Using Firebase Functions in production mode', { region: FUNCTIONS_REGION })
     return
   }
 
-  console.log('Functions Emulator enabled:', true)
+  logDebug('Functions Emulator enabled', { enabled: true })
 
   if (isEmulatorConnected) {
-    console.log('✅ Functions Emulator already connected')
+    logDebug('Functions Emulator already connected')
     return
   }
 
@@ -59,13 +69,15 @@ function connectFunctionsEmulatorIfNeeded(instance: Functions): void {
     const emulatorPort = resolveEmulatorPort(import.meta.env.VITE_FIREBASE_FUNCTIONS_EMULATOR_PORT)
     connectFunctionsEmulator(instance, emulatorHost, emulatorPort)
     isEmulatorConnected = true
-    console.log(
-      `✅ Connected to Functions Emulator at ${emulatorHost}:${emulatorPort} (region: ${FUNCTIONS_REGION})`,
-    )
+    logDebug('Connected to Functions Emulator', {
+      emulatorHost,
+      emulatorPort,
+      region: FUNCTIONS_REGION,
+    })
   } catch (error: unknown) {
     if (isAlreadyConnectedFunctionsError(error)) {
       isEmulatorConnected = true
-      console.log('✅ Functions Emulator already connected')
+      logDebug('Functions Emulator already connected')
       return
     }
 
@@ -75,12 +87,11 @@ function connectFunctionsEmulatorIfNeeded(instance: Functions): void {
 
 function createFunctionsInstance(): ReturnType<typeof getFunctions> {
   const app = getFirebaseApp()
-  console.log('Initializing Firebase Functions with app:', app.options.projectId)
+  logDebug('Initializing Firebase Functions', { projectId: app.options.projectId })
 
   const useEmulator = isFunctionsEmulatorEnabled()
-  console.log('Functions Emulator enabled:', useEmulator)
+  logDebug('Functions Emulator enabled', { enabled: useEmulator })
 
-  // 에뮬레이터/운영 둘 다 같은 region을 쓰도록 맞춘다.
   const instance = getFunctions(app, FUNCTIONS_REGION)
   connectFunctionsEmulatorIfNeeded(instance)
   return instance
@@ -98,17 +109,31 @@ function getFunctionsInstance() {
   }
 }
 
-/** 타입 지정해서 callable을 만드는 공통 헬퍼 */
 function createCallable<TRequest, TResponse>(name: string): HttpsCallable<TRequest, TResponse> {
   const functions = getFunctionsInstance()
   const callable = httpsCallable<TRequest, TResponse>(functions, name)
 
-  // 에뮬레이터 쓸 때는 어떤 callable을 만들었는지 로그로 확인하기 쉽게 남긴다.
   if (isFunctionsEmulatorEnabled()) {
-    console.log(`Created callable function: ${name}`)
+    logDebug('Created callable function', { name })
   }
 
   return callable
+}
+
+type StatType = 'Speed' | 'Stamina' | 'Power' | 'Guts' | 'Start' | 'Luck'
+type AugmentRarity = 'common' | 'rare' | 'epic' | 'legendary' | 'hidden'
+type SpecialAbilityType = 'lastSpurt' | 'overtake' | 'escapeCrisis'
+type NextStatus = 'setResult' | 'augmentSelection' | 'finished'
+
+type AugmentResponse = {
+  id: string
+  name: string
+  rarity: AugmentRarity
+  statType?: StatType
+  statValue?: number
+  specialAbility?: SpecialAbilityType
+  specialAbilityValue?: number
+  description?: string
 }
 
 export const createGuestSession = createCallable<
@@ -116,7 +141,6 @@ export const createGuestSession = createCallable<
   { guestId: string; sessionToken: string; expiresAtMillis: number }
 >('createGuestSession')
 
-// 룸 관리 callable
 export const createRoom = createCallable<
   {
     playerId: string
@@ -163,7 +187,6 @@ export const startGame = createCallable<
   { success: boolean; status: string }
 >('startGame')
 
-// 게임 진행 callable
 export const selectHorse = createCallable<
   {
     roomId: string
@@ -205,16 +228,7 @@ export const getAugmentSelection = createCallable<
   {
     success: boolean
     rarity: 'common' | 'rare' | 'epic' | 'legendary'
-    availableAugments: Array<{
-      id: string
-      name: string
-      rarity: 'common' | 'rare' | 'epic' | 'legendary' | 'hidden'
-      statType?: 'Speed' | 'Stamina' | 'Power' | 'Guts' | 'Start' | 'Luck'
-      statValue?: number
-      specialAbility?: 'lastSpurt' | 'overtake' | 'escapeCrisis'
-      specialAbilityValue?: number
-      description?: string
-    }>
+    availableAugments: AugmentResponse[]
     selectedCount: number
     totalPlayers: number
   }
@@ -224,16 +238,7 @@ export const rerollAugments = createCallable<
   { roomId: string; playerId: string; sessionToken: string; joinToken: string; setIndex: number },
   {
     success: boolean
-    newAugments: Array<{
-      id: string
-      name: string
-      rarity: 'common' | 'rare' | 'epic' | 'legendary' | 'hidden'
-      statType?: 'Speed' | 'Stamina' | 'Power' | 'Guts' | 'Start' | 'Luck'
-      statValue?: number
-      specialAbility?: 'lastSpurt' | 'overtake' | 'escapeCrisis'
-      specialAbilityValue?: number
-      description?: string
-    }>
+    newAugments: AugmentResponse[]
     rerollUsed: number
     remainingRerolls: number
   }
@@ -278,7 +283,7 @@ export const readyNextSet = createCallable<
   {
     success: boolean
     allReady: boolean
-    nextStatus: 'setResult' | 'augmentSelection' | 'finished'
+    nextStatus: NextStatus
     currentSet: number
   }
 >('readyNextSet')
@@ -293,16 +298,7 @@ export const getSetResult = createCallable<
       name: string
       position: number
       time: number
-      selectedAugments: Array<{
-        id: string
-        name: string
-        rarity: 'common' | 'rare' | 'epic' | 'legendary' | 'hidden'
-        statType?: 'Speed' | 'Stamina' | 'Power' | 'Guts' | 'Start' | 'Luck'
-        statValue?: number
-        specialAbility?: 'lastSpurt' | 'overtake' | 'escapeCrisis'
-        specialAbilityValue?: number
-        description?: string
-      }>
+      selectedAugments: AugmentResponse[]
     }>
     startedAtMillis: number | null
     readyCount: number
@@ -374,7 +370,6 @@ export const getRaceState = createCallable<
   }
 >('getRaceState')
 
-// 최종 결과 Functions
 export const submitFinalRaceResult = createCallable<
   {
     roomId: string
@@ -396,7 +391,6 @@ export const submitFinalRaceResult = createCallable<
   { success: boolean }
 >('submitFinalRaceResult')
 
-// 상태 관리 Functions
 export const setPlayerReady = createCallable<
   { roomId: string; playerId: string; sessionToken: string; joinToken: string; isReady: boolean },
   { success: boolean }

@@ -4,6 +4,49 @@ import type { Augment, AugmentRarity } from '../../../../engine/race'
 import { AUGMENT_STAT_NAMES, SPECIAL_ABILITY_NAMES } from '../../../../engine/race'
 import { createRoundedButton, type RoundedButtonController } from '../../ui/createRoundedButton'
 
+const RACE_RESULT_SCENE_KEY = 'RaceResultScene'
+const DEFAULT_TOTAL_ROUNDS = 3
+const DEFAULT_PLAYER_COUNT = 8
+const CARD_STAGGER_BASE_DELAY_MS = 150
+const CARD_STAGGER_STEP_DELAY_MS = 70
+const BUTTON_Y_RATIO = 0.85
+const BUTTON_HEIGHT = 45
+const RESULT_CONTAINER_DEPTH = 2000
+const FINAL_RESULT_BUTTON_DEPTH = 2001
+const RESULT_CARD_FADE_DURATION_MS = 400
+const RESULT_BUTTON_FADE_IN_DELAY_MS = 800
+const RESULT_CONTAINER_FADE_OUT_DURATION_MS = 280
+const DEFAULT_BORDER_COLOR = 0x666666
+const PLAYER_HIGHLIGHT_BORDER_COLOR = 0xffd700
+const RESULT_SCENE_FONT_FAMILY = 'NeoDunggeunmo'
+const READY_BUTTON_WIDTH = 200
+const FINAL_RESULT_BUTTON_WIDTH = 240
+const RANK_MEDAL_BADGES: Record<number, string> = {
+  1: '🥇',
+  2: '🥈',
+  3: '🥉',
+}
+
+type RankingEntry = {
+  rank: number
+  name: string
+  time: number
+  finished: boolean
+  augments?: Augment[]
+  horseIndex?: number
+}
+
+type RaceResultSceneInputData = {
+  rankings?: RankingEntry[]
+  playerHorseIndex?: number
+  playerCount?: number
+  currentSet?: number
+  totalRounds?: number
+  onClose?: () => void
+  onNextSet?: () => void
+  onFinalResult?: () => void
+}
+
 /**
  * 라운드 종료 후 순위를 보여주는 오버레이 씬
  * RaceScene 위에 launch되어 결과를 보여주고, 버튼 클릭 후 다음 흐름으로 넘긴다.
@@ -13,17 +56,10 @@ export default class RaceResultScene extends Phaser.Scene {
   private onNextSetCallback?: () => void
   private onFinalResultCallback?: () => void
   private playerHorseIndex: number = 0
-  private playerCount: number = 8
+  private playerCount: number = DEFAULT_PLAYER_COUNT
   private currentSet: number = 1
-  private totalRounds: number = 3
-  private rankings: Array<{
-    rank: number
-    name: string
-    time: number
-    finished: boolean
-    augments?: Augment[]
-    horseIndex?: number // 플레이어 말 강조 표시용 원래 말 인덱스
-  }> = []
+  private totalRounds: number = DEFAULT_TOTAL_ROUNDS
+  private rankings: RankingEntry[] = []
 
   /** 결과표 전체 컨테이너. 버튼 클릭 후 페이드 아웃할 때 같이 숨긴다. */
   private resultContainer?: Phaser.GameObjects.Container
@@ -34,7 +70,10 @@ export default class RaceResultScene extends Phaser.Scene {
     return this.currentSet < this.totalRounds
   }
 
-  private addResultButtonContainer(button: RoundedButtonController, delay: number = 800) {
+  private addResultButtonContainer(
+    button: RoundedButtonController,
+    delay: number = RESULT_BUTTON_FADE_IN_DELAY_MS,
+  ) {
     if (!this.resultContainer) return
 
     button.container.setAlpha(0)
@@ -42,7 +81,7 @@ export default class RaceResultScene extends Phaser.Scene {
     this.tweens.add({
       targets: button.container,
       alpha: 1,
-      duration: 400,
+      duration: RESULT_CARD_FADE_DURATION_MS,
       delay,
       ease: 'Power2',
     })
@@ -77,71 +116,34 @@ export default class RaceResultScene extends Phaser.Scene {
   }
 
   constructor() {
-    super({ key: 'RaceResultScene' })
-    // 게임 시작 시점 언어를 사용한다. (게임 중 언어 변경은 여기서 따로 반영 안 함)
+    super({ key: RACE_RESULT_SCENE_KEY })
   }
 
-  init(data?: {
-    rankings?: Array<{
-      rank: number
-      name: string
-      time: number
-      finished: boolean
-      augments?: Augment[]
-      horseIndex?: number
-    }>
-    playerHorseIndex?: number
-    playerCount?: number
-    currentSet?: number
-    totalRounds?: number
-    onClose?: () => void
-    onNextSet?: () => void
-    onFinalResult?: () => void
-  }) {
-    this.rankings = data?.rankings || []
-    this.playerHorseIndex = data?.playerHorseIndex ?? 0
-    this.playerCount = data?.playerCount ?? 8
-    this.currentSet = data?.currentSet ?? 1
-    this.totalRounds = data?.totalRounds ?? 3
-    this.onCloseCallback = data?.onClose
-    this.onNextSetCallback = data?.onNextSet
-    this.onFinalResultCallback = data?.onFinalResult
+  private applySceneInput(data?: RaceResultSceneInputData) {
+    if (!data) return
+    this.rankings = data.rankings ?? this.rankings
+    this.playerHorseIndex = data.playerHorseIndex ?? this.playerHorseIndex
+    this.playerCount = data.playerCount ?? this.playerCount
+    this.currentSet = data.currentSet ?? this.currentSet
+    this.totalRounds = data.totalRounds ?? this.totalRounds
+    this.onCloseCallback = data.onClose ?? this.onCloseCallback
+    this.onNextSetCallback = data.onNextSet ?? this.onNextSetCallback
+    this.onFinalResultCallback = data.onFinalResult ?? this.onFinalResultCallback
   }
 
-  create(data?: {
-    rankings?: Array<{
-      rank: number
-      name: string
-      time: number
-      finished: boolean
-      augments?: Augment[]
-      horseIndex?: number
-    }>
-    playerHorseIndex?: number
-    playerCount?: number
-    currentSet?: number
-    totalRounds?: number
-    onClose?: () => void
-    onNextSet?: () => void
-    onFinalResult?: () => void
-  }) {
-    if (data) {
-      this.rankings = data.rankings || this.rankings
-      this.playerHorseIndex = data.playerHorseIndex ?? this.playerHorseIndex
-      this.playerCount = data.playerCount ?? this.playerCount
-      this.currentSet = data.currentSet ?? this.currentSet
-      this.totalRounds = data.totalRounds ?? this.totalRounds
-      this.onCloseCallback = data.onClose || this.onCloseCallback
-      this.onNextSetCallback = data.onNextSet || this.onNextSetCallback
-      this.onFinalResultCallback = data.onFinalResult || this.onFinalResultCallback
-    }
+  init(data?: RaceResultSceneInputData) {
+    this.applySceneInput(data)
+  }
+
+  create(data?: RaceResultSceneInputData) {
+    this.applySceneInput(data)
 
     this.cameras.main.roundPixels = true
 
     const width = this.scale.width
     const height = this.scale.height
 
-    this.resultContainer = this.add.container(0, 0).setDepth(2000)
+    this.resultContainer = this.add.container(0, 0).setDepth(RESULT_CONTAINER_DEPTH)
     this.resultContainer.add(
       this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.92).setInteractive(),
     )
@@ -179,7 +181,7 @@ export default class RaceResultScene extends Phaser.Scene {
 
     resultsToShow.forEach((result, index) => {
       const cardY = startY + index * (cardHeight + cardGap)
-      const delay = 150 + index * 70
+      const delay = CARD_STAGGER_BASE_DELAY_MS + index * CARD_STAGGER_STEP_DELAY_MS
 
       this.createRankCard(
         result,
@@ -193,7 +195,7 @@ export default class RaceResultScene extends Phaser.Scene {
     })
   }
 
-  private isPlayerHorseResult(result: (typeof this.rankings)[number]): boolean {
+  private isPlayerHorseResult(result: RankingEntry): boolean {
     return result.horseIndex !== undefined && result.horseIndex === this.playerHorseIndex
   }
 
@@ -201,12 +203,14 @@ export default class RaceResultScene extends Phaser.Scene {
     cardContainer: Phaser.GameObjects.Container,
     cardWidth: number,
     cardHeight: number,
-    result: (typeof this.rankings)[number],
+    result: RankingEntry,
     isPlayerHorse: boolean,
   ) {
     const medalColor = RaceResultScene.MEDAL_COLORS[result.rank]
     const bgColor = isPlayerHorse ? 0x2a2a3e : 0x1a1a2e
-    const borderColor = isPlayerHorse ? 0xffd700 : medalColor || 0x666666
+    const borderColor = isPlayerHorse
+      ? PLAYER_HIGHLIGHT_BORDER_COLOR
+      : (medalColor ?? DEFAULT_BORDER_COLOR)
     const borderWidth = isPlayerHorse ? 4 : 2
 
     const cardBg = this.add.graphics()
@@ -218,13 +222,10 @@ export default class RaceResultScene extends Phaser.Scene {
   }
 
   private getRankBadgeText(rank: number): string {
-    if (rank === 1) return '🥇'
-    if (rank === 2) return '🥈'
-    if (rank === 3) return '🥉'
-    return `${rank}`
+    return RANK_MEDAL_BADGES[rank] ?? `${rank}`
   }
 
-  private getResultDisplayName(result: (typeof this.rankings)[number]): string {
+  private getResultDisplayName(result: RankingEntry): string {
     return (
       result.name ||
       (result.horseIndex !== undefined ? `Horse_${result.horseIndex + 1}` : 'Unknown')
@@ -233,13 +234,13 @@ export default class RaceResultScene extends Phaser.Scene {
 
   private addRankBadgeText(
     cardContainer: Phaser.GameObjects.Container,
-    result: (typeof this.rankings)[number],
+    result: RankingEntry,
     cardWidth: number,
   ) {
     const rankText = this.getRankBadgeText(result.rank)
     const rank = this.add
       .text(-cardWidth / 2 + 35, 0, rankText, {
-        fontFamily: 'NeoDunggeunmo',
+        fontFamily: RESULT_SCENE_FONT_FAMILY,
         fontSize: result.rank <= 3 ? '30px' : '24px',
         color: '#ffffff',
         fontStyle: 'bold',
@@ -250,7 +251,7 @@ export default class RaceResultScene extends Phaser.Scene {
 
   private addNameText(
     cardContainer: Phaser.GameObjects.Container,
-    result: (typeof this.rankings)[number],
+    result: RankingEntry,
     cardWidth: number,
     isPlayerHorse: boolean,
   ) {
@@ -258,7 +259,7 @@ export default class RaceResultScene extends Phaser.Scene {
     const displayName = this.getResultDisplayName(result)
     const name = this.add
       .text(-cardWidth / 2 + 120, 0, `${displayName}${nameSuffix}`, {
-        fontFamily: 'NeoDunggeunmo',
+        fontFamily: RESULT_SCENE_FONT_FAMILY,
         fontSize: '17px',
         color: isPlayerHorse ? '#ffd700' : '#ffffff',
         fontStyle: isPlayerHorse ? 'bold' : 'normal',
@@ -269,7 +270,7 @@ export default class RaceResultScene extends Phaser.Scene {
 
   private addTimeText(
     cardContainer: Phaser.GameObjects.Container,
-    result: (typeof this.rankings)[number],
+    result: RankingEntry,
     cardWidth: number,
   ) {
     const timeText = result.finished
@@ -277,7 +278,7 @@ export default class RaceResultScene extends Phaser.Scene {
       : i18next.t('game.dnf')
     const time = this.add
       .text(-cardWidth / 2 + 350, 0, timeText, {
-        fontFamily: 'NeoDunggeunmo',
+        fontFamily: RESULT_SCENE_FONT_FAMILY,
         fontSize: '16px',
         color: result.finished ? '#ffffff' : '#888888',
         fontStyle: 'normal',
@@ -313,7 +314,7 @@ export default class RaceResultScene extends Phaser.Scene {
   private addNoAugmentText(cardContainer: Phaser.GameObjects.Container, cardWidth: number) {
     const noAugmentText = this.add
       .text(cardWidth / 2 - 20, 0, i18next.t('game.noAugment'), {
-        fontFamily: 'NeoDunggeunmo',
+        fontFamily: RESULT_SCENE_FONT_FAMILY,
         fontSize: '14px',
         color: '#888888',
       })
@@ -339,7 +340,7 @@ export default class RaceResultScene extends Phaser.Scene {
       const item = augmentTexts[i]
       const itemText = this.add
         .text(cursorX, 0, item.text, {
-          fontFamily: 'NeoDunggeunmo',
+          fontFamily: RESULT_SCENE_FONT_FAMILY,
           fontSize,
           color: item.color,
         })
@@ -351,7 +352,7 @@ export default class RaceResultScene extends Phaser.Scene {
 
       const separator = this.add
         .text(cursorX, 0, ', ', {
-          fontFamily: 'NeoDunggeunmo',
+          fontFamily: RESULT_SCENE_FONT_FAMILY,
           fontSize,
           color: '#ffffff',
         })
@@ -370,7 +371,7 @@ export default class RaceResultScene extends Phaser.Scene {
       targets: cardContainer,
       alpha: 1,
       y,
-      duration: 400,
+      duration: RESULT_CARD_FADE_DURATION_MS,
       delay,
       ease: 'Back.easeOut',
     })
@@ -412,9 +413,9 @@ export default class RaceResultScene extends Phaser.Scene {
    * 준비 버튼 생성 (다음 세트가 있을 때)
    */
   private createReadyButton(width: number, height: number) {
-    const buttonY = height * 0.85
-    const buttonWidth = 200
-    const buttonHeight = 45
+    const buttonY = height * BUTTON_Y_RATIO
+    const buttonWidth = READY_BUTTON_WIDTH
+    const buttonHeight = BUTTON_HEIGHT
 
     this.readyButton = createRoundedButton(this, {
       x: width / 2,
@@ -452,7 +453,7 @@ export default class RaceResultScene extends Phaser.Scene {
     this.tweens.add({
       targets: container,
       alpha: 0,
-      duration: 280,
+      duration: RESULT_CONTAINER_FADE_OUT_DURATION_MS,
       ease: 'Power2.In',
       onComplete: () => this.startNextSet(),
     })
@@ -470,9 +471,9 @@ export default class RaceResultScene extends Phaser.Scene {
    * 최종 결과 보기 버튼 생성 (마지막 세트일 때)
    */
   private createFinalResultButton(width: number, height: number) {
-    const buttonY = height * 0.85
-    const buttonWidth = 240
-    const buttonHeight = 45
+    const buttonY = height * BUTTON_Y_RATIO
+    const buttonWidth = FINAL_RESULT_BUTTON_WIDTH
+    const buttonHeight = BUTTON_HEIGHT
 
     this.finalResultButton = createRoundedButton(this, {
       x: width / 2,
@@ -488,7 +489,7 @@ export default class RaceResultScene extends Phaser.Scene {
       onClick: () => this.handleFinalResultButtonClick(),
       scaleOnHover: true,
     })
-    this.finalResultButton.container.setDepth(2001)
+    this.finalResultButton.container.setDepth(FINAL_RESULT_BUTTON_DEPTH)
     this.addResultButtonContainer(this.finalResultButton)
   }
 }

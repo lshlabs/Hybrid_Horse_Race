@@ -3,6 +3,9 @@ import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
+const DEV_SERVER_PORT = 5173
+const PHASER_CHUNK_WARNING_LIMIT_KB = 1300
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -13,7 +16,7 @@ export default defineConfig({
   },
   server: {
     host: true, // 모든 네트워크 인터페이스에서 접근 가능
-    port: 5173, // 기본 포트 (변경 가능)
+    port: DEV_SERVER_PORT, // 기본 포트 (변경 가능)
   },
   test: {
     globals: true,
@@ -26,7 +29,7 @@ export default defineConfig({
   },
   build: {
     // Phaser 엔진 청크는 특성상 큰 편이므로 경고 임계값을 엔진 크기에 맞춘다.
-    chunkSizeWarningLimit: 1300,
+    chunkSizeWarningLimit: PHASER_CHUNK_WARNING_LIMIT_KB,
     rollupOptions: {
       output: {
         manualChunks(id) {

@@ -35,46 +35,96 @@ export type ComputeAuthoritativeRenderElapsedMsResult = {
   timeHardSnapCountDelta: number
 }
 
-export function computeAuthoritativeRenderElapsedMs(
-  params: ComputeAuthoritativeRenderElapsedMsParams,
-): ComputeAuthoritativeRenderElapsedMsResult {
-  // 서버가 내려준 시각(authoritativeNowMs)이 있으면 우선 사용하고,
-  // 없으면 startedAt + elapsed 조합으로 대체한다.
-  const authorityNowMs =
-    params.authoritativeNowMs > 0
-      ? params.authoritativeNowMs
-      : params.startedAtMs + params.authoritativeElapsedMs
+const MILLISECONDS_PER_SECOND = 1000
 
-  let targetElapsedMs = Math.max(0, authorityNowMs - params.startedAtMs - params.renderDelayMs)
-  if (params.lastAuthoritativePollClientTimeMs > 0) {
-    const sincePollMs = Math.max(0, params.clientNowMs - params.lastAuthoritativePollClientTimeMs)
-    targetElapsedMs += sincePollMs
+function clampNonNegative(value: number): number {
+  return Math.max(0, value)
+}
+
+function resolveAuthorityNowMs(params: {
+  authoritativeNowMs: number
+  startedAtMs: number
+  authoritativeElapsedMs: number
+}): number {
+  return params.authoritativeNowMs > 0
+    ? params.authoritativeNowMs
+    : params.startedAtMs + params.authoritativeElapsedMs
+}
+
+function computeTargetElapsedMs(params: {
+  authorityNowMs: number
+  startedAtMs: number
+  renderDelayMs: number
+  clientNowMs: number
+  lastAuthoritativePollClientTimeMs: number
+}): number {
+  let targetElapsedMs = clampNonNegative(
+    params.authorityNowMs - params.startedAtMs - params.renderDelayMs,
+  )
+  if (params.lastAuthoritativePollClientTimeMs <= 0) {
+    return targetElapsedMs
   }
+  const sincePollMs = clampNonNegative(
+    params.clientNowMs - params.lastAuthoritativePollClientTimeMs,
+  )
+  targetElapsedMs += sincePollMs
+  return targetElapsedMs
+}
 
-  let nextSmoothedElapsedMs: number
-  let timeHardSnapCountDelta = 0
+function computeSmoothedElapsedMs(params: {
+  targetElapsedMs: number
+  smoothedElapsedMs: number | null
+  timeHardSnapMs: number
+  timeSoftCorrectionAlpha: number
+}): { smoothedElapsedMs: number; timeHardSnapCountDelta: number } {
   if (params.smoothedElapsedMs === null) {
-    nextSmoothedElapsedMs = targetElapsedMs
-  } else {
-    const deltaToTarget = targetElapsedMs - params.smoothedElapsedMs
-    if (Math.abs(deltaToTarget) >= params.timeHardSnapMs) {
-      nextSmoothedElapsedMs = targetElapsedMs
-      timeHardSnapCountDelta = 1
-    } else {
-      nextSmoothedElapsedMs =
-        params.smoothedElapsedMs + deltaToTarget * params.timeSoftCorrectionAlpha
+    return {
+      smoothedElapsedMs: params.targetElapsedMs,
+      timeHardSnapCountDelta: 0,
     }
   }
 
-  // targetElapsedMs에 이미 "서버 기준 시간 + 폴링 이후 경과시간"이 반영되어 있어서
-  // 여기서 frame delta를 또 더하면 시간이 빨라지는 문제가 생긴다.
-  // 그래서 보정된 target 값을 그대로 따라가도록 유지한다.
-  const rawRenderElapsedMs = Math.max(0, nextSmoothedElapsedMs)
+  const deltaToTarget = params.targetElapsedMs - params.smoothedElapsedMs
+  if (Math.abs(deltaToTarget) >= params.timeHardSnapMs) {
+    return {
+      smoothedElapsedMs: params.targetElapsedMs,
+      timeHardSnapCountDelta: 1,
+    }
+  }
+
+  return {
+    smoothedElapsedMs: params.smoothedElapsedMs + deltaToTarget * params.timeSoftCorrectionAlpha,
+    timeHardSnapCountDelta: 0,
+  }
+}
+
+export function computeAuthoritativeRenderElapsedMs(
+  params: ComputeAuthoritativeRenderElapsedMsParams,
+): ComputeAuthoritativeRenderElapsedMsResult {
+  const authorityNowMs = resolveAuthorityNowMs(params)
+  const targetElapsedMs = computeTargetElapsedMs({
+    authorityNowMs,
+    startedAtMs: params.startedAtMs,
+    renderDelayMs: params.renderDelayMs,
+    clientNowMs: params.clientNowMs,
+    lastAuthoritativePollClientTimeMs: params.lastAuthoritativePollClientTimeMs,
+  })
+
+  const smoothingResult = computeSmoothedElapsedMs({
+    targetElapsedMs,
+    smoothedElapsedMs: params.smoothedElapsedMs,
+    timeHardSnapMs: params.timeHardSnapMs,
+    timeSoftCorrectionAlpha: params.timeSoftCorrectionAlpha,
+  })
+  const nextSmoothedElapsedMs = smoothingResult.smoothedElapsedMs
+  const timeHardSnapCountDelta = smoothingResult.timeHardSnapCountDelta
+
+  const rawRenderElapsedMs = clampNonNegative(nextSmoothedElapsedMs)
   const renderElapsedMs = Math.max(params.lastRenderedElapsedMs, rawRenderElapsedMs)
 
   return {
     renderElapsedMs,
-    simElapsedSec: renderElapsedMs / 1000,
+    simElapsedSec: renderElapsedMs / MILLISECONDS_PER_SECOND,
     smoothedElapsedMs: nextSmoothedElapsedMs,
     lastRenderedElapsedMs: renderElapsedMs,
     timeHardSnapCountDelta,

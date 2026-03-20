@@ -1,22 +1,35 @@
-/**
- * 공통 유틸리티 함수
- */
-
 import { getFirestore, FieldValue } from 'firebase-admin/firestore'
 import { HttpsError } from 'firebase-functions/v2/https'
 import type { Room, Player, RoomStatus } from './types'
 
-// 모듈 로딩 순서가 꼬일 때를 피하려고 DB는 필요할 때 가져오게 해둠
-function getDb() {
+const DEFAULT_MAX_PLAYERS = 8
+const STAT_KEYS = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Luck'] as const
+const BASE_STAT_VALUE = 8
+const TOTAL_STAT_POINTS = 80
+const INITIAL_STATS = {
+  Speed: BASE_STAT_VALUE,
+  Stamina: BASE_STAT_VALUE,
+  Power: BASE_STAT_VALUE,
+  Guts: BASE_STAT_VALUE,
+  Start: BASE_STAT_VALUE,
+  Luck: BASE_STAT_VALUE,
+}
+
+function getDb(): FirebaseFirestore.Firestore {
   return getFirestore()
 }
 
-/**
- * 룸 존재 여부 확인
- */
+function getRoomRef(db: FirebaseFirestore.Firestore, roomId: string) {
+  return db.collection('rooms').doc(roomId)
+}
+
+function getPlayersRef(db: FirebaseFirestore.Firestore, roomId: string) {
+  return getRoomRef(db, roomId).collection('players')
+}
+
 export async function getRoom(roomId: string): Promise<Room> {
   const db = getDb()
-  const roomRef = db.collection('rooms').doc(roomId)
+  const roomRef = getRoomRef(db, roomId)
   const roomDoc = await roomRef.get()
 
   if (!roomDoc.exists) {
@@ -26,16 +39,9 @@ export async function getRoom(roomId: string): Promise<Room> {
   return roomDoc.data() as Room
 }
 
-/**
- * 특정 플레이어 문서 가져오기
- * 문서가 없으면 null 반환
- */
-export async function getPlayer(
-  roomId: string,
-  playerId: string,
-): Promise<Player | null> {
+export async function getPlayer(roomId: string, playerId: string): Promise<Player | null> {
   const db = getDb()
-  const playerRef = db.collection('rooms').doc(roomId).collection('players').doc(playerId)
+  const playerRef = getPlayersRef(db, roomId).doc(playerId)
   const playerDoc = await playerRef.get()
 
   if (!playerDoc.exists) {
@@ -45,87 +51,48 @@ export async function getPlayer(
   return playerDoc.data() as Player
 }
 
-/**
- * 룸의 모든 플레이어 가져오기
- * 정렬이 필요하면 호출하는 쪽에서 처리한다.
- */
 export async function getAllPlayers(roomId: string): Promise<Player[]> {
   const db = getDb()
-  const playersSnapshot = await db
-    .collection('rooms')
-    .doc(roomId)
-    .collection('players')
-    .get()
+  const playersSnapshot = await getPlayersRef(db, roomId).get()
 
   return playersSnapshot.docs.map((doc) => doc.data() as Player)
 }
 
-/**
- * 룸 상태 간단 업데이트
- */
-export async function updateRoomStatus(
-  roomId: string,
-  status: RoomStatus,
-): Promise<void> {
+export async function updateRoomStatus(roomId: string, status: RoomStatus): Promise<void> {
   const db = getDb()
-  const roomRef = db.collection('rooms').doc(roomId)
+  const roomRef = getRoomRef(db, roomId)
   await roomRef.update({
     status,
     updatedAt: FieldValue.serverTimestamp(),
   })
 }
 
-/**
- * 현재 플레이어 수 확인
- */
 export async function getPlayerCount(roomId: string): Promise<number> {
   const db = getDb()
-  const playersSnapshot = await db
-    .collection('rooms')
-    .doc(roomId)
-    .collection('players')
-    .get()
+  const playersSnapshot = await getPlayersRef(db, roomId).get()
 
   return playersSnapshot.size
 }
 
-/**
- * 호스트 확인
- * 플레이어 문서의 isHost 필드로 판별한다.
- */
 export async function isHost(roomId: string, playerId: string): Promise<boolean> {
   const player = await getPlayer(roomId, playerId)
   return player?.isHost === true
 }
 
-/**
- * 플레이어가 룸에 참가했는지 확인
- */
-export async function isPlayerInRoom(
-  roomId: string,
-  playerId: string,
-): Promise<boolean> {
+export async function isPlayerInRoom(roomId: string, playerId: string): Promise<boolean> {
   const player = await getPlayer(roomId, playerId)
   return player !== null
 }
 
-/**
- * 룸이 가득 찼는지 확인
- */
 export async function isRoomFull(roomId: string): Promise<boolean> {
   const room = await getRoom(roomId)
   const playerCount = await getPlayerCount(roomId)
-  const maxPlayers = typeof room.maxPlayers === 'number' ? room.maxPlayers : 8
+  const maxPlayers = typeof room.maxPlayers === 'number' ? room.maxPlayers : DEFAULT_MAX_PLAYERS
   return playerCount >= maxPlayers
 }
 
-/**
- * 모든 게스트 플레이어가 준비됐는지 확인
- * (호스트는 준비 체크 대상에서 제외)
- */
 export async function areAllPlayersReady(roomId: string): Promise<boolean> {
   const players = await getAllPlayers(roomId)
-
   const guestPlayers = players.filter((player) => !player.isHost)
 
   if (guestPlayers.length === 0) {
@@ -135,10 +102,6 @@ export async function areAllPlayersReady(roomId: string): Promise<boolean> {
   return guestPlayers.every((player) => player.isReady)
 }
 
-/**
- * 초기 능력치 생성
- * 기본값 8씩 넣고 남은 포인트를 랜덤하게 나눠준다.
- */
 export function generateInitialStats(): {
   Speed: number
   Stamina: number
@@ -147,23 +110,14 @@ export function generateInitialStats(): {
   Start: number
   Luck: number
 } {
-  const stats = {
-    Speed: 8,
-    Stamina: 8,
-    Power: 8,
-    Guts: 8,
-    Start: 8,
-    Luck: 8,
-  }
+  const stats = { ...INITIAL_STATS }
+  let remainingPoints = TOTAL_STAT_POINTS - STAT_KEYS.length * BASE_STAT_VALUE
 
-  const statNames: Array<keyof typeof stats> = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Luck']
-  let remaining = 80 - 6 * 8 // 남은 포인트
-
-  while (remaining > 0) {
-    const randomIndex = Math.floor(Math.random() * statNames.length)
-    const key = statNames[randomIndex]
+  while (remainingPoints > 0) {
+    const randomIndex = Math.floor(Math.random() * STAT_KEYS.length)
+    const key = STAT_KEYS[randomIndex]
     stats[key] += 1
-    remaining -= 1
+    remainingPoints -= 1
   }
 
   return stats

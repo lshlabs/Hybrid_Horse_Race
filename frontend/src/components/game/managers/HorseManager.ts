@@ -145,6 +145,24 @@ export interface HorseManagerConfig {
  * - 말의 움직임 구현
  */
 export default class HorseManager {
+  private static readonly DEFAULT_PLAYER_COUNT = 8
+  private static readonly IDLE_SEQUENCE_BASE_COUNT = 8
+  private static readonly IDLE_SEQUENCE_ALT1_COUNT = 1
+  private static readonly IDLE_SEQUENCE_ALT2_COUNT = 1
+  private static readonly HORSE_Y_RATIO_MIN = 0.45
+  private static readonly HORSE_Y_RATIO_MAX = 0.82
+  private static readonly HORSE_Y_RATIO_FULL_INDEX_LAST = 7
+  private static readonly DEFAULT_RANGE_RATIO = 0.8
+  private static readonly RANGE_RATIO_BY_PLAYER_COUNT: Record<number, number> = {
+    2: 0.25,
+    3: 0.4,
+    4: 0.55,
+    5: 0.65,
+    6: 0.72,
+    7: 0.76,
+    8: 0.8,
+  }
+
   private scene: Phaser.Scene
   // 렌더링용 스프라이트 배열 (화면 표시)
   private horses: HorseRunner[] = []
@@ -162,7 +180,7 @@ export default class HorseManager {
 
   constructor(config: HorseManagerConfig) {
     this.scene = config.scene
-    this.playerCount = config.playerCount ?? 8 // 기본값 8
+    this.playerCount = config.playerCount ?? HorseManager.DEFAULT_PLAYER_COUNT
 
     // 말 애니메이션은 씬당 한 번만 만들면 되지만, exists 체크가 있어서 여러 번 호출돼도 안전하다.
     this.createHorseAnimations()
@@ -232,8 +250,11 @@ export default class HorseManager {
   // 말의 Y 위치 비율 (게임 높이 기준) - 8마리 기준
   /** 8마리 말 Y 비율 - 0.52 ~ 0.96 균등 분배 */
   private static readonly HORSE_Y_RATIOS_FULL = Array.from(
-    { length: 8 },
-    (_, i) => 0.45 + ((0.82 - 0.45) * i) / 7,
+    { length: HorseManager.DEFAULT_PLAYER_COUNT },
+    (_, i) =>
+      HorseManager.HORSE_Y_RATIO_MIN +
+      ((HorseManager.HORSE_Y_RATIO_MAX - HorseManager.HORSE_Y_RATIO_MIN) * i) /
+        HorseManager.HORSE_Y_RATIO_FULL_INDEX_LAST,
   )
 
   /**
@@ -241,7 +262,11 @@ export default class HorseManager {
    * 시퀀스 길이 10으로 비율 맞춘 뒤 셔플하여 반복 재생.
    */
   private static randomIdleSequence(): number[] {
-    const seq = [...Array(8).fill(0), ...Array(1).fill(1), ...Array(1).fill(2)] as number[]
+    const seq = [
+      ...Array(HorseManager.IDLE_SEQUENCE_BASE_COUNT).fill(0),
+      ...Array(HorseManager.IDLE_SEQUENCE_ALT1_COUNT).fill(1),
+      ...Array(HorseManager.IDLE_SEQUENCE_ALT2_COUNT).fill(2),
+    ] as number[]
     for (let i = seq.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1))
       ;[seq[i], seq[j]] = [seq[j], seq[i]]
@@ -255,7 +280,7 @@ export default class HorseManager {
     const BASE_DEPTH = 10
 
     const minYRatio = HorseManager.HORSE_Y_RATIOS_FULL[0]
-    const maxYRatio = HorseManager.HORSE_Y_RATIOS_FULL[7]
+    const maxYRatio = HorseManager.HORSE_Y_RATIOS_FULL[HorseManager.HORSE_Y_RATIO_FULL_INDEX_LAST]
     const yRatios = this.calculateHorseYRatios(minYRatio, maxYRatio)
 
     // 레인 순서대로 말 번호를 고정 배치한다 (1~playerCount)
@@ -291,16 +316,7 @@ export default class HorseManager {
    * 플레이어 수가 적을수록 더 가까이 배치
    */
   private getRangeRatioForPlayerCount(playerCount: number): number {
-    const rangeRatios: Record<number, number> = {
-      2: 0.25, // 2명: 25%
-      3: 0.4, // 3명: 40%
-      4: 0.55, // 4명: 55%
-      5: 0.65, // 5명: 65%
-      6: 0.72, // 6명: 72%
-      7: 0.76, // 7명: 76%
-      8: 0.8, // 8명: 80%
-    }
-    return rangeRatios[playerCount] || 0.8
+    return HorseManager.RANGE_RATIO_BY_PLAYER_COUNT[playerCount] ?? HorseManager.DEFAULT_RANGE_RATIO
   }
 
   /**
@@ -377,7 +393,7 @@ export default class HorseManager {
     const startX = trackStartWorldXPx
 
     const minYRatio = HorseManager.HORSE_Y_RATIOS_FULL[0]
-    const maxYRatio = HorseManager.HORSE_Y_RATIOS_FULL[7]
+    const maxYRatio = HorseManager.HORSE_Y_RATIOS_FULL[HorseManager.HORSE_Y_RATIO_FULL_INDEX_LAST]
     const allRatios = this.calculateHorseYRatios(minYRatio, maxYRatio)
     const playerHorseYRatio = allRatios[playerHorseIndex] ?? (minYRatio + maxYRatio) / 2
 

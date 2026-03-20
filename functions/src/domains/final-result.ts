@@ -3,7 +3,6 @@ import { Timestamp } from 'firebase-admin/firestore'
 import { z } from 'zod'
 import type { RoomStatus } from '../types'
 
-// 최종 결과(전체 라운드 합산)를 host가 한 번 저장하는 callable
 type LoggerLike = {
   info: (message: string, context?: Record<string, unknown>) => void
   error: (message: string, error: unknown) => void
@@ -46,25 +45,35 @@ const submitFinalRaceResultSchema = z.object({
     }),
   ),
 })
+const CALLABLE_OPTIONS = { region: 'asia-northeast3', cors: true } as const
+const STATUS_FINISHED: RoomStatus = 'finished'
 
 export function createFinalResultCallables(deps: FinalResultDeps) {
+  function parseOrThrow<T extends z.ZodTypeAny>(schema: T, data: unknown): z.infer<T> {
+    const parsed = schema.safeParse(data)
+    if (parsed.success) {
+      return parsed.data
+    }
+    throw new HttpsError('invalid-argument', 'Invalid arguments', {
+      errors: parsed.error.flatten().fieldErrors,
+    })
+  }
+
+  function rethrowUnexpected(error: unknown, publicMessage: string): never {
+    if (error instanceof HttpsError) {
+      throw error
+    }
+    throw new HttpsError('internal', publicMessage)
+  }
+
   const submitFinalRaceResult = onCall(
-    {
-      region: 'asia-northeast3',
-      cors: true,
-    },
+    CALLABLE_OPTIONS,
     async (request) => {
       try {
-        // 1) 입력 검증
-        const parseResult = submitFinalRaceResultSchema.safeParse(request.data)
-        if (!parseResult.success) {
-          throw new HttpsError('invalid-argument', 'Invalid arguments', {
-            errors: parseResult.error.flatten().fieldErrors,
-          })
-        }
-
-        const { roomId, playerId, sessionToken, joinToken, finalRankings } = parseResult.data
-        // 2) 룸 존재 확인 + host 권한 확인
+        const { roomId, playerId, sessionToken, joinToken, finalRankings } = parseOrThrow(
+          submitFinalRaceResultSchema,
+          request.data,
+        )
         await deps.getRoom(roomId)
         await deps.assertJoinedRoomHostRequest({
           roomId,
@@ -74,25 +83,22 @@ export function createFinalResultCallables(deps: FinalResultDeps) {
           hostErrorMessage: 'Only host can submit final result',
         })
 
-        // 3) 룸 상태를 finished로 바꾸고 최종 결과를 저장한다.
-        // 결과 저장은 host 한 번만 수행하는 전제라서 여기서 최종 snapshot처럼 남긴다.
-        await deps.updateRoomStatus(roomId, 'finished')
+        await deps.updateRoomStatus(roomId, STATUS_FINISHED)
+        const now = Timestamp.now()
 
         await deps.db.collection('rooms').doc(roomId).update({
           finalResult: {
             finalRankings,
-            // 저장 시각을 남겨두면 재접속/디버깅 때 어떤 결과가 최신인지 보기 쉽다.
-            submittedAt: Timestamp.now(),
+            submittedAt: now,
           },
-          updatedAt: Timestamp.now(),
+          updatedAt: now,
         })
 
         deps.logger.info('Final race result submitted', { roomId, playerCount: finalRankings.length })
         return { success: true }
       } catch (error) {
         deps.logger.error('submitFinalRaceResult error', error)
-        if (error instanceof HttpsError) throw error
-        throw new HttpsError('internal', 'Failed to submit final race result')
+        rethrowUnexpected(error, 'Failed to submit final race result')
       }
     },
   )

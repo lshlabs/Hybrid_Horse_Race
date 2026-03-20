@@ -3,7 +3,9 @@ interface SpinnerProps {
   size?: number
 }
 
-function Spinner({ className = '', size = 12 }: SpinnerProps) {
+const DEFAULT_SPINNER_SIZE = 12
+
+function Spinner({ className = '', size = DEFAULT_SPINNER_SIZE }: SpinnerProps) {
   return (
     <svg
       role="status"

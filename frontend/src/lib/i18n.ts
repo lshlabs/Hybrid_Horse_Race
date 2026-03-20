@@ -5,6 +5,11 @@ import LanguageDetector from 'i18next-browser-languagedetector'
 import enCommon from '../locales/en/common.json'
 import koCommon from '../locales/ko/common.json'
 
+const FALLBACK_LANGUAGE = 'ko'
+const SUPPORTED_LANGUAGES = ['ko', 'en'] as const
+const DETECTION_ORDER = ['localStorage', 'navigator'] as const
+const DETECTION_CACHES = ['localStorage'] as const
+
 const resources = {
   en: {
     common: enCommon,
@@ -19,15 +24,15 @@ void i18n
   .use(initReactI18next)
   .init({
     resources,
-    fallbackLng: 'ko',
-    supportedLngs: ['ko', 'en'],
+    fallbackLng: FALLBACK_LANGUAGE,
+    supportedLngs: [...SUPPORTED_LANGUAGES],
     defaultNS: 'common',
     interpolation: {
       escapeValue: false,
     },
     detection: {
-      order: ['localStorage', 'navigator'],
-      caches: ['localStorage'],
+      order: [...DETECTION_ORDER],
+      caches: [...DETECTION_CACHES],
     },
   })
 

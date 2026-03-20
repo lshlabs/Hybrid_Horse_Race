@@ -31,6 +31,16 @@ import {
   clamp,
 } from './stat-system'
 
+const INITIAL_RANK = 999
+const START_BOOST_DISTANCE_RATIO = 0.2
+const CRISIS_BONUS_DIVISOR = 10
+const CRISIS_BONUS_SCALE = 0.1
+const OVERTAKE_BONUS_BASE_VALUE = 6
+const OVERTAKE_BONUS_STEP = 0.005
+const OVERTAKE_BONUS_BASE_RATE = 0.01
+const FATIGUE_START_STAMINA_RATIO = 0.85
+const FATIGUE_CURVE_EXPONENT = 0.8
+
 export class Horse {
   name: string
   baseStats: Stats
@@ -61,8 +71,8 @@ export class Horse {
   overtakeBonusActive: boolean = false // 추월 보너스 활성화 여부
   overtakeBonusValue: number = 0 // 추월 보너스 수치
   overtakeCount: number = 0 // 추월 횟수 (중첩 적용용)
-  currentRank: number = 999 // 현재 순위
-  previousRank: number = 999 // 이전 순위 (추월 감지용)
+  currentRank: number = INITIAL_RANK // 현재 순위
+  previousRank: number = INITIAL_RANK // 이전 순위 (추월 감지용)
   escapeCrisisActive: boolean = false // 위기 탈출 활성화 여부
   escapeCrisisValue: number = 0 // 위기 탈출 수치 (능력치 증가량)
   escapeCrisisUsed: boolean = false // 위기 탈출 사용 여부 (게임당 1번)
@@ -215,8 +225,8 @@ export class Horse {
     this.lastStaminaRecovery = 0
 
     // 순위 초기화 (추월 감지용)
-    this.currentRank = 999
-    this.previousRank = 999
+    this.currentRank = INITIAL_RANK
+    this.previousRank = INITIAL_RANK
   }
 
   /**
@@ -251,7 +261,7 @@ export class Horse {
 
     // 가속 계수 (Power 기반 + Start 기반 초반 버프)
     let accel = this.accelFactor
-    const startBoostDistance = this.trackLengthM * 0.2 // 초반 구간에서만 Start 보너스 강화
+    const startBoostDistance = this.trackLengthM * START_BOOST_DISTANCE_RATIO // 초반 구간에서만 Start 보너스 강화
     if (this.position < startBoostDistance) {
       accel *= this.startAccelBoost
     }
@@ -259,7 +269,7 @@ export class Horse {
     // 위기 탈출: 순위가 3위 이하일 때 능력치 증가
     if (this.escapeCrisisActive && this.escapeCrisisValue > 0) {
       // 수치에 따라 능력치 증가 (6~10 → 6%~10% 증가)
-      const crisisBonus = (this.escapeCrisisValue / 10) * 0.1 // 0.06 ~ 0.10
+      const crisisBonus = (this.escapeCrisisValue / CRISIS_BONUS_DIVISOR) * CRISIS_BONUS_SCALE // 0.06 ~ 0.10
       const statMultiplier = 1.0 + crisisBonus
       targetSpeed *= statMultiplier
     }
@@ -267,7 +277,9 @@ export class Horse {
     // 추월 보너스: 수치에 따라 속도 증가율이 다름, 추월 횟수만큼 중첩 적용
     if (this.overtakeBonusActive && this.overtakeBonusValue > 0 && this.overtakeCount > 0) {
       // 수치별 속도 증가율: 6→1%, 7→1.5%, 8→2%, 9→2.5%, 10→3%
-      const speedBonusPerOvertake = (this.overtakeBonusValue - 6) * 0.005 + 0.01 // 0.01 ~ 0.03
+      const speedBonusPerOvertake =
+        (this.overtakeBonusValue - OVERTAKE_BONUS_BASE_VALUE) * OVERTAKE_BONUS_STEP +
+        OVERTAKE_BONUS_BASE_RATE // 0.01 ~ 0.03
       targetSpeed *= Math.pow(1.0 + speedBonusPerOvertake, this.overtakeCount)
     }
 
@@ -308,9 +320,9 @@ export class Horse {
       staminaRatio = clamp(staminaRatio, 0, 1)
 
       // 스태미나 85% 아래부터 피로 보정 시작
-      if (staminaRatio < 0.85) {
-        const x = staminaRatio / 0.85
-        const fatigueCurve = Math.pow(x, 0.8) // 완만한 감소
+      if (staminaRatio < FATIGUE_START_STAMINA_RATIO) {
+        const x = staminaRatio / FATIGUE_START_STAMINA_RATIO
+        const fatigueCurve = Math.pow(x, FATIGUE_CURVE_EXPONENT) // 완만한 감소
         fatigueFactor = this.fatigueFloor + (1 - this.fatigueFloor) * fatigueCurve
         fatigueFactor = clamp(fatigueFactor, this.fatigueFloor, 1.0)
       }

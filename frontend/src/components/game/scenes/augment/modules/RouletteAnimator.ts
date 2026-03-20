@@ -2,6 +2,38 @@ import Phaser from 'phaser'
 import type { AugmentRarity } from '../../../../../engine/race'
 import { AUGMENT_RARITY_NAMES } from '../../../../../engine/race'
 
+const FRAME_WIDTH = 400
+const FRAME_HEIGHT = 120
+const FRAME_RADIUS = 16
+const FRAME_BORDER_COLOR = 0xffd700
+const FRAME_BG_ALPHA = 0.8
+const SLOT_TEXT_SPACING = 90
+const SLOT_SPIN_DURATION_MS = 5000
+const SLOT_REPEAT_COUNT = 20
+const SLOT_TEXT_FONT_SIZE = '48px'
+const SLOT_INITIAL_Y_OFFSET = 500
+const SLOT_TEXT_FONT_FAMILY = 'NeoDunggeunmo'
+const PARTICLE_COUNT = 30
+const PARTICLE_DISTANCE = 200
+const PARTICLE_RADIUS = 8
+const PARTICLE_DURATION_MS = 800
+const RESULT_PULSE_DURATION_MS = 300
+const RESULT_FADE_DURATION_MS = 800
+const SLOT_CONTAINER_DEPTH = 1000
+
+function toHexColor(color: number): string {
+  return `#${color.toString(16).padStart(6, '0')}`
+}
+
+function buildRouletteRarityPool(rarityColors: Record<AugmentRarity, number>) {
+  const rarities: AugmentRarity[] = ['common', 'rare', 'epic', 'legendary']
+  return {
+    rarities,
+    rarityNames: rarities.map((rarity) => AUGMENT_RARITY_NAMES[rarity]),
+    rarityColorValues: rarities.map((rarity) => rarityColors[rarity]),
+  }
+}
+
 /**
  * 증강 등급 룰렛 연출 모듈.
  * - 슬롯 텍스트 스핀 -> 최종 등급 강조 -> 파티클 -> 페이드아웃
@@ -41,38 +73,23 @@ export default class RouletteAnimator {
     const startVisual = () => {
       // 룰렛 전용 컨테이너: 씬 전환 시 한 번에 정리하기 쉽도록 묶는다.
       this.slotMachineContainer = this.scene.add.container(0, 0)
-      this.slotMachineContainer.setDepth(1000)
+      this.slotMachineContainer.setDepth(SLOT_CONTAINER_DEPTH)
 
       const frameX = width / 2
       const frameY = height / 2 - this.uiOffsetY
-      const frameWidth = 400
-      const frameHeight = 120
-      const textSpacing = 90
-      const spinDuration = 5000
-
-      const frameBg = new Phaser.GameObjects.Graphics(this.scene)
-      frameBg.fillStyle(0x000000, 0.8)
-      frameBg.fillRoundedRect(
-        frameX - frameWidth / 2,
-        frameY - frameHeight / 2,
-        frameWidth,
-        frameHeight,
-        16,
+      const { rarities, rarityNames, rarityColorValues } = buildRouletteRarityPool(
+        this.rarityColors,
       )
-      this.slotMachineContainer.add(frameBg)
 
-      // 실제 뽑기 대상(히든 제외) 등급 목록
-      const rarities: AugmentRarity[] = ['common', 'rare', 'epic', 'legendary']
-      const rarityNames = rarities.map((r) => AUGMENT_RARITY_NAMES[r])
-      const rarityColors = rarities.map((r) => this.rarityColors[r])
+      this.addFrameShell(frameX, frameY)
 
       const maskGraphics = new Phaser.GameObjects.Graphics(this.scene)
       maskGraphics.fillStyle(0xffffff)
       maskGraphics.fillRect(
-        frameX - frameWidth / 2,
-        frameY - frameHeight / 2,
-        frameWidth,
-        frameHeight,
+        frameX - FRAME_WIDTH / 2,
+        frameY - FRAME_HEIGHT / 2,
+        FRAME_WIDTH,
+        FRAME_HEIGHT,
       )
       maskGraphics.setVisible(false)
       const mask = maskGraphics.createGeometryMask()
@@ -82,22 +99,21 @@ export default class RouletteAnimator {
         frameX,
         frameY,
         rarityNames,
-        rarityColors,
+        rarityColorValues,
         mask,
-        textSpacing,
+        SLOT_TEXT_SPACING,
       )
-      this.animateSlotTexts(slotTexts, frameY, textSpacing, rarities, spinDuration, width, height)
+      this.animateSlotTexts(
+        slotTexts,
+        frameY,
+        SLOT_TEXT_SPACING,
+        rarities,
+        SLOT_SPIN_DURATION_MS,
+        width,
+        height,
+      )
 
-      const frameGraphics = new Phaser.GameObjects.Graphics(this.scene)
-      frameGraphics.lineStyle(6, 0xffd700, 1)
-      frameGraphics.strokeRoundedRect(
-        frameX - frameWidth / 2,
-        frameY - frameHeight / 2,
-        frameWidth,
-        frameHeight,
-        16,
-      )
-      this.slotMachineContainer.add(frameGraphics)
+      this.addFrameBorder(frameX, frameY)
     }
 
     if (this.visualDelayMs > 0) {
@@ -116,36 +132,16 @@ export default class RouletteAnimator {
 
     const frameX = width / 2
     const frameY = height / 2 - this.uiOffsetY
-    const frameWidth = 400
-    const frameHeight = 120
-    const rarities: AugmentRarity[] = ['common', 'rare', 'epic', 'legendary']
+    const { rarities } = buildRouletteRarityPool(this.rarityColors)
     const targetRarityIndex = rarities.indexOf(this.rarity)
     const rarityName = AUGMENT_RARITY_NAMES[this.rarity]
     const rarityColor = this.rarityColors[this.rarity]
 
     if (!this.slotMachineContainer) {
       this.slotMachineContainer = this.scene.add.container(0, 0)
-      this.slotMachineContainer.setDepth(1000)
-      const frameBg = new Phaser.GameObjects.Graphics(this.scene)
-      frameBg.fillStyle(0x000000, 0.8)
-      frameBg.fillRoundedRect(
-        frameX - frameWidth / 2,
-        frameY - frameHeight / 2,
-        frameWidth,
-        frameHeight,
-        16,
-      )
-      this.slotMachineContainer.add(frameBg)
-      const frameGraphics = new Phaser.GameObjects.Graphics(this.scene)
-      frameGraphics.lineStyle(6, 0xffd700, 1)
-      frameGraphics.strokeRoundedRect(
-        frameX - frameWidth / 2,
-        frameY - frameHeight / 2,
-        frameWidth,
-        frameHeight,
-        16,
-      )
-      this.slotMachineContainer.add(frameGraphics)
+      this.slotMachineContainer.setDepth(SLOT_CONTAINER_DEPTH)
+      this.addFrameShell(frameX, frameY)
+      this.addFrameBorder(frameX, frameY)
     } else {
       const list = [...(this.slotMachineContainer.list || [])]
       list.forEach((obj) => {
@@ -153,26 +149,8 @@ export default class RouletteAnimator {
         tweens.forEach((t) => t.stop())
       })
       this.slotMachineContainer.removeAll(true)
-      const frameBg = new Phaser.GameObjects.Graphics(this.scene)
-      frameBg.fillStyle(0x000000, 0.8)
-      frameBg.fillRoundedRect(
-        frameX - frameWidth / 2,
-        frameY - frameHeight / 2,
-        frameWidth,
-        frameHeight,
-        16,
-      )
-      this.slotMachineContainer.add(frameBg)
-      const frameGraphics = new Phaser.GameObjects.Graphics(this.scene)
-      frameGraphics.lineStyle(6, 0xffd700, 1)
-      frameGraphics.strokeRoundedRect(
-        frameX - frameWidth / 2,
-        frameY - frameHeight / 2,
-        frameWidth,
-        frameHeight,
-        16,
-      )
-      this.slotMachineContainer.add(frameGraphics)
+      this.addFrameShell(frameX, frameY)
+      this.addFrameBorder(frameX, frameY)
     }
 
     const finalText = this.scene.make
@@ -181,9 +159,9 @@ export default class RouletteAnimator {
         y: frameY,
         text: rarityName,
         style: {
-          fontFamily: 'NeoDunggeunmo',
-          fontSize: '48px',
-          color: `#${rarityColor.toString(16).padStart(6, '0')}`,
+          fontFamily: SLOT_TEXT_FONT_FAMILY,
+          fontSize: SLOT_TEXT_FONT_SIZE,
+          color: toHexColor(rarityColor),
           fontStyle: 'bold',
         },
         add: false,
@@ -212,21 +190,21 @@ export default class RouletteAnimator {
     textSpacing: number,
   ): Phaser.GameObjects.Text[] {
     // 텍스트를 충분히 반복 생성해 "오랫동안 스핀되는" 시각 효과를 만든다.
-    const repeatCount = 20
+    const repeatCount = SLOT_REPEAT_COUNT
     const slotTexts: Phaser.GameObjects.Text[] = []
 
     for (let i = 0; i < repeatCount; i++) {
       for (let j = 0; j < rarityNames.length; j++) {
-        const y = frameY - 500 - (i * rarityNames.length + j) * textSpacing
+        const y = frameY - SLOT_INITIAL_Y_OFFSET - (i * rarityNames.length + j) * textSpacing
         const text = this.scene.make
           .text({
             x: frameX,
             y,
             text: rarityNames[j],
             style: {
-              fontFamily: 'NeoDunggeunmo',
-              fontSize: '48px',
-              color: `#${rarityColors[j].toString(16).padStart(6, '0')}`,
+              fontFamily: SLOT_TEXT_FONT_FAMILY,
+              fontSize: SLOT_TEXT_FONT_SIZE,
+              color: toHexColor(rarityColors[j]!),
               fontStyle: 'bold',
             },
             add: false,
@@ -242,6 +220,32 @@ export default class RouletteAnimator {
     return slotTexts
   }
 
+  private addFrameShell(frameX: number, frameY: number): void {
+    const frameBg = new Phaser.GameObjects.Graphics(this.scene)
+    frameBg.fillStyle(0x000000, FRAME_BG_ALPHA)
+    frameBg.fillRoundedRect(
+      frameX - FRAME_WIDTH / 2,
+      frameY - FRAME_HEIGHT / 2,
+      FRAME_WIDTH,
+      FRAME_HEIGHT,
+      FRAME_RADIUS,
+    )
+    this.slotMachineContainer?.add(frameBg)
+  }
+
+  private addFrameBorder(frameX: number, frameY: number): void {
+    const frameGraphics = new Phaser.GameObjects.Graphics(this.scene)
+    frameGraphics.lineStyle(6, FRAME_BORDER_COLOR, 1)
+    frameGraphics.strokeRoundedRect(
+      frameX - FRAME_WIDTH / 2,
+      frameY - FRAME_HEIGHT / 2,
+      FRAME_WIDTH,
+      FRAME_HEIGHT,
+      FRAME_RADIUS,
+    )
+    this.slotMachineContainer?.add(frameGraphics)
+  }
+
   private animateSlotTexts(
     slotTexts: Phaser.GameObjects.Text[],
     frameY: number,
@@ -253,7 +257,7 @@ export default class RouletteAnimator {
   ): void {
     // 마지막 사이클에서 목표 등급 인덱스가 가운데에 오도록 최종 y를 계산한다.
     const targetRarityIndex = rarities.indexOf(this.rarity)
-    const repeatCount = 20
+    const repeatCount = SLOT_REPEAT_COUNT
     const lastCycleStart = (repeatCount - 1) * rarities.length
     const targetTextIndex = lastCycleStart + targetRarityIndex
 
@@ -290,7 +294,7 @@ export default class RouletteAnimator {
     this.scene.tweens.add({
       targets: sizeObj,
       size: pulseSize,
-      duration: 300,
+      duration: RESULT_PULSE_DURATION_MS,
       ease: 'Back.easeOut',
       yoyo: true,
       onUpdate: () => {
@@ -307,8 +311,8 @@ export default class RouletteAnimator {
   }
 
   private createExplosionParticles(centerX: number, centerY: number, color: number) {
-    const particleCount = 30
-    const distance = 200
+    const particleCount = PARTICLE_COUNT
+    const distance = PARTICLE_DISTANCE
 
     for (let i = 0; i < particleCount; i++) {
       const angle = (Math.PI * 2 * i) / particleCount
@@ -319,7 +323,7 @@ export default class RouletteAnimator {
         this.scene,
         centerX,
         centerY,
-        8,
+        PARTICLE_RADIUS,
         0,
         360,
         false,
@@ -335,7 +339,7 @@ export default class RouletteAnimator {
         y: targetY,
         alpha: 0,
         scale: 0,
-        duration: 800,
+        duration: PARTICLE_DURATION_MS,
         ease: 'Power2',
         onComplete: () => particle.destroy(),
       })
@@ -350,14 +354,14 @@ export default class RouletteAnimator {
     this.scene.tweens.add({
       targets: finalText,
       alpha: 0,
-      duration: 800,
+      duration: RESULT_FADE_DURATION_MS,
       ease: 'Power2',
     })
 
     this.scene.tweens.add({
       targets: this.slotMachineContainer,
       alpha: 0,
-      duration: 800,
+      duration: RESULT_FADE_DURATION_MS,
       ease: 'Power2',
       onComplete: () => {
         this.slotMachineContainer?.removeAll(true)

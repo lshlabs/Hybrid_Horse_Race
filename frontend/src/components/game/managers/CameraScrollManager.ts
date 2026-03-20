@@ -53,29 +53,36 @@ export default class CameraScrollManager {
     return trackStartWorldXPx + horseScreenDistance
   }
 
+  private getLeadingHorsePositionM(simHorses: Horse[]): number {
+    return Math.max(...simHorses.map((horse) => horse.position))
+  }
+
+  private getHorseScreenXByPosition(positionM: number): number {
+    const trackLengthM = this.mapManager.getTrackLengthM()
+    const trackLengthPx = this.mapManager.getTrackLengthPx()
+    const trackStartWorldXPx = this.mapManager.getTrackStartWorldXPx()
+    const progress = positionToProgress(positionM, trackLengthM, { capAtOne: true })
+    const horseWorldX = trackStartWorldXPx + progress * trackLengthPx
+    return horseWorldX - this.cameraScrollPx
+  }
+
   /** 카메라 스크롤 업데이트 (RaceScene update에서 매 프레임 호출) */
   update(simHorses: Horse[], isRaceFinished: boolean) {
     const gameWidth = this.scene.scale.width
     const centerX = gameWidth / 2
     const trackLengthM = this.mapManager.getTrackLengthM()
     const trackLengthPx = this.mapManager.getTrackLengthPx()
-    const trackStartWorldXPx = this.mapManager.getTrackStartWorldXPx()
 
     if (!this.isScrolling) {
       for (const simHorse of simHorses) {
-        // 여기서부터는 말이 앞으로 가는 느낌보다 카메라가 따라가는 느낌으로 전환된다.
-        const progress = positionToProgress(simHorse.position, trackLengthM, {
-          capAtOne: true,
-        })
-        const horseScreenDistance = progress * trackLengthPx
-        const horseWorldX = trackStartWorldXPx + horseScreenDistance
-        const horseScreenX = horseWorldX - this.cameraScrollPx
+        const horseScreenX = this.getHorseScreenXByPosition(simHorse.position)
+        const horseWorldX = horseScreenX + this.cameraScrollPx
 
         if (horseScreenX >= centerX) {
           this.isScrolling = true
           this.cameraScrollPxAtStart = horseWorldX - centerX
           this.cameraScrollPx = this.cameraScrollPxAtStart
-          this.leadingHorsePositionMAtScrollStart = Math.max(...simHorses.map((h) => h.position))
+          this.leadingHorsePositionMAtScrollStart = this.getLeadingHorsePositionM(simHorses)
           this.syncToMap()
           return
         }
@@ -83,7 +90,7 @@ export default class CameraScrollManager {
     }
 
     if (this.isScrolling) {
-      const maxPosition = Math.max(...simHorses.map((h) => h.position))
+      const maxPosition = this.getLeadingHorsePositionM(simHorses)
       this.cameraScrollPx =
         this.cameraScrollPxAtStart +
         ((maxPosition - this.leadingHorsePositionMAtScrollStart) / trackLengthM) * trackLengthPx

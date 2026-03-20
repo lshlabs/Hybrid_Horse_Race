@@ -27,6 +27,9 @@ type BuildRaceScriptResult = {
   conditionRollByPlayer: Record<string, number>
   snapshotHash: string
 }
+const MS_PER_SECOND = 1000
+const MIN_FRAME_DT_MS = 1
+const SLOWMO_TRIGGER_RATIO = 0.95
 
 export function buildRaceScript(
   inputs: RaceScriptBuildInput[],
@@ -68,7 +71,7 @@ export function buildRaceScript(
 
   let timeSec = 0
   let nextFrameMs = 0
-  const dtSec = simStepMs / 1000
+  const dtSec = simStepMs / MS_PER_SECOND
 
   while (timeSec <= maxSimTimeSec) {
     const ranking = horses
@@ -88,7 +91,7 @@ export function buildRaceScript(
         events.push({
           id: `overtake-${entry.playerId}-${Math.round(timeSec * 1000)}-${prev}-${rank}`,
           type: 'overtake',
-          elapsedMs: Math.round(timeSec * 1000),
+          elapsedMs: Math.round(timeSec * MS_PER_SECOND),
           playerId: entry.playerId,
           fromRank: prev,
           toRank: rank,
@@ -105,7 +108,7 @@ export function buildRaceScript(
         events.push({
           id: `last-spurt-${horse.playerId}-${Math.round(timeSec * 1000)}`,
           type: 'lastSpurt',
-          elapsedMs: Math.round(timeSec * 1000),
+          elapsedMs: Math.round(timeSec * MS_PER_SECOND),
           playerId: horse.playerId,
         })
       }
@@ -116,7 +119,7 @@ export function buildRaceScript(
       }
     })
 
-    const elapsedMs = Math.round(timeSec * 1000)
+    const elapsedMs = Math.round(timeSec * MS_PER_SECOND)
     if (elapsedMs >= nextFrameMs) {
       const positions: Record<string, number> = {}
       const stamina: Record<string, number> = {}
@@ -135,10 +138,10 @@ export function buildRaceScript(
         })
       } else {
         const prev = keyframes[keyframes.length - 1]
-        const actualDtMs = Math.max(1, elapsedMs - prev.elapsedMs)
+        const actualDtMs = Math.max(MIN_FRAME_DT_MS, elapsedMs - prev.elapsedMs)
         horses.forEach((horse) => {
           const delta = Math.max(0, positions[horse.playerId] - (prev.positions[horse.playerId] ?? 0))
-          speeds[horse.playerId] = Number((delta / (actualDtMs / 1000)).toFixed(4))
+          speeds[horse.playerId] = Number((delta / (actualDtMs / MS_PER_SECOND)).toFixed(4))
         })
       }
 
@@ -167,7 +170,7 @@ export function buildRaceScript(
     }))
 
   rankings.forEach((entry) => {
-    const finishMs = Math.round(entry.time * 1000)
+    const finishMs = Math.round(entry.time * MS_PER_SECOND)
     events.push({
       id: `finish-${entry.playerId}-${finishMs}`,
       type: 'finish',
@@ -179,7 +182,7 @@ export function buildRaceScript(
 
   const winner = rankings.find((entry) => entry.position === 1)
   // 우승 말 기록 시간 기준으로 95% 지점에 slowmoTrigger 이벤트를 만든다.
-  const slowmoTriggerMs = Math.max(0, Math.round((winner?.time ?? 0) * 1000 * 0.95))
+  const slowmoTriggerMs = Math.max(0, Math.round((winner?.time ?? 0) * MS_PER_SECOND * SLOWMO_TRIGGER_RATIO))
   events.push({
     id: `slowmo-${slowmoTriggerMs}`,
     type: 'slowmoTrigger',

@@ -5,6 +5,21 @@ import type { Augment, AugmentStatType } from '../../../engine/race'
 
 /** 능력치 테이블 셀 순서 (createAbilityTable / updateStats와 동일) */
 const STAT_ORDER: AugmentStatType[] = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Luck']
+const DEFAULT_PLAYER_COUNT = 8
+const GUI_FONT_FAMILY = 'NeoDunggeunmo'
+const HUD_FADE_OUT_DURATION_MS = 280
+const HUD_FADE_IN_DURATION_MS = 320
+const RANK_HIGHLIGHT_DURATION_MS = 1000
+const RANK_HIGHLIGHT_BLINK_DURATION_MS = 300
+const RANK_HIGHLIGHT_BLINK_ALPHA = 0.6
+const STAMINA_RECOVERY_FLOAT_Y_OFFSET_PX = 30
+const STAMINA_RECOVERY_FLOAT_DURATION_MS = 1500
+
+function formatRaceRecordTime(recordTimeSec: number): string {
+  const sec = Math.floor(recordTimeSec)
+  const ms = Math.floor((recordTimeSec - sec) * 1000) % 1000
+  return `${sec}:${String(ms).padStart(3, '0')}`
+}
 
 type GuiHorseStatsInput = {
   currentSpeed: number // m/s
@@ -135,7 +150,11 @@ export default class GUIManager {
     this.hudCardHitArea?.setVisible(visible)
   }
 
-  constructor(scene: Phaser.Scene, sceneHeight: number, playerCount: number = 8) {
+  constructor(
+    scene: Phaser.Scene,
+    sceneHeight: number,
+    playerCount: number = DEFAULT_PLAYER_COUNT,
+  ) {
     this.scene = scene
     this.sceneHeight = sceneHeight
     this.playerCount = playerCount
@@ -177,7 +196,7 @@ export default class GUIManager {
     const rankNumX = x - 40
     this.rankingRankText = this.scene.add
       .text(rankNumX, y, '1', {
-        fontFamily: 'NeoDunggeunmo',
+        fontFamily: GUI_FONT_FAMILY,
         fontSize: '64px',
         color: textColor,
         fontStyle: 'bold',
@@ -191,7 +210,7 @@ export default class GUIManager {
     const rankNumHeight = 64
     this.rankingOrdinalSuffixText = this.scene.add
       .text(rankNumX, y + rankNumHeight, 'st', {
-        fontFamily: 'NeoDunggeunmo',
+        fontFamily: GUI_FONT_FAMILY,
         fontSize: '28px',
         color: textColor,
       })
@@ -204,7 +223,7 @@ export default class GUIManager {
     // 고정폭(모노스페이스) 폰트로 숫자당 너비 동일 → 시간 갱신 시 좌우 흔들림 방지
     this.timeText = this.scene.add
       .text(x, timeY, '0:000', {
-        fontFamily: 'NeoDunggeunmo',
+        fontFamily: GUI_FONT_FAMILY,
         fontSize: '32px',
         color: textColor,
       })
@@ -217,10 +236,7 @@ export default class GUIManager {
   /** 우상단 업데이트: 기록 시간(순위표 기록과 동일, 초 단위 소수점 3자리). 라운드 표시 없음. */
   updateTopRight(recordTimeSec: number) {
     if (this.timeText) {
-      // 소수점 3자리(ms)까지만 맞춰서 결과 표기와 형식을 맞춘다.
-      const sec = Math.floor(recordTimeSec)
-      const ms = Math.floor((recordTimeSec - sec) * 1000) % 1000 // 000~999만 표시 (1000 방지)
-      this.timeText.setText(`${sec}:${String(ms).padStart(3, '0')}`)
+      this.timeText.setText(formatRaceRecordTime(recordTimeSec))
     }
   }
 
@@ -351,7 +367,7 @@ export default class GUIManager {
         const cellY = startY + row * cellHeight + cellHeight / 2
         const text = this.scene.add
           .text(cellX, cellY, `${labels[row][col]} : 0`, {
-            fontFamily: 'NeoDunggeunmo',
+            fontFamily: GUI_FONT_FAMILY,
             fontSize: '13px',
             color: '#ffffff',
             align: 'center',
@@ -387,7 +403,7 @@ export default class GUIManager {
       const cellY = startY + row * cellHeight + cellHeight / 2
       const text = this.scene.add
         .text(cellX, cellY, `${labels[row]} : 0`, {
-          fontFamily: 'NeoDunggeunmo',
+          fontFamily: GUI_FONT_FAMILY,
           fontSize: '13px',
           color: '#ffffff',
           align: 'center',
@@ -413,7 +429,7 @@ export default class GUIManager {
     for (let i = 0; i < this.playerCount; i++) {
       const text = this.scene.add
         .text(panelLeft + 12, listStartY + i * GUIManager.RANK_ROW_GAP, '', {
-          fontFamily: 'NeoDunggeunmo',
+          fontFamily: GUI_FONT_FAMILY,
           fontSize: `${GUIManager.RANK_ROW_FONT}px`,
           color: GUIManager.RANKING_PANEL_COLOR,
         })
@@ -511,10 +527,9 @@ export default class GUIManager {
           fontStyle: isPlayer ? 'bold' : 'normal',
         })
         text.setAlpha(1)
-        const highlightDurationMs = 1000
-        const endAt = this.scene.time.now + highlightDurationMs
+        const endAt = this.scene.time.now + RANK_HIGHLIGHT_DURATION_MS
         this.rankingHighlightEndAt.set(horse.name, endAt)
-        this.scene.time.delayedCall(highlightDurationMs, () => {
+        this.scene.time.delayedCall(RANK_HIGHLIGHT_DURATION_MS, () => {
           this.rankingHighlightEndAt.delete(horse.name)
           text.setStyle({
             color: normalColor,
@@ -525,8 +540,8 @@ export default class GUIManager {
         // alpha를 잠깐 흔들어서 눈에 띄게 한다.
         this.scene.tweens.add({
           targets: text,
-          alpha: 0.6,
-          duration: 300,
+          alpha: RANK_HIGHLIGHT_BLINK_ALPHA,
+          duration: RANK_HIGHLIGHT_BLINK_DURATION_MS,
           yoyo: true,
           ease: 'Power1',
           onComplete: () => text.setAlpha(normalAlpha),
@@ -598,7 +613,7 @@ export default class GUIManager {
     // 체력 줄 오른쪽에 +수치 텍스트를 띄우고 위로 올라가며 사라지게 한다.
     const recoveryText = this.scene.add
       .text(worldX + 70, worldY, `+${recoveryAmount}`, {
-        fontFamily: 'NeoDunggeunmo',
+        fontFamily: GUI_FONT_FAMILY,
         fontSize: '16px',
         color: '#00ff00',
         align: 'center',
@@ -610,9 +625,9 @@ export default class GUIManager {
 
     this.scene.tweens.add({
       targets: recoveryText,
-      y: worldY - 30,
+      y: worldY - STAMINA_RECOVERY_FLOAT_Y_OFFSET_PX,
       alpha: 0,
-      duration: 1500,
+      duration: STAMINA_RECOVERY_FLOAT_DURATION_MS,
       ease: 'Power2',
       onComplete: () => recoveryText.destroy(),
     })
@@ -639,7 +654,7 @@ export default class GUIManager {
       this.scene.tweens.add({
         targets,
         alpha: 0,
-        duration: 280,
+        duration: HUD_FADE_OUT_DURATION_MS,
         ease: 'Power2.In',
         onComplete: () => {
           targets.forEach((o) => {
@@ -660,7 +675,7 @@ export default class GUIManager {
       this.scene.tweens.add({
         targets,
         alpha: 1,
-        duration: 320,
+        duration: HUD_FADE_IN_DURATION_MS,
         ease: 'Power2.Out',
       })
       return
@@ -745,7 +760,11 @@ export default class GUIManager {
     return speedText
   }
 
-  private updateCurrentStateTexts(horse: GuiHorseStatsInput, currentSpeedKmh: number, maxSpeedKmh: number) {
+  private updateCurrentStateTexts(
+    horse: GuiHorseStatsInput,
+    currentSpeedKmh: number,
+    maxSpeedKmh: number,
+  ) {
     if (this.statsCellTexts.length < 3) return
 
     // 현재상태 면: 속도 / 체력 / 컨디션 보너스
@@ -795,7 +814,9 @@ export default class GUIManager {
     const highlightIndex =
       this.previewAugment?.statType != null ? STAT_ORDER.indexOf(this.previewAugment.statType) : -1
     const previewAdd =
-      highlightIndex >= 0 && this.previewAugment?.statValue != null ? this.previewAugment.statValue : null
+      highlightIndex >= 0 && this.previewAugment?.statValue != null
+        ? this.previewAugment.statValue
+        : null
 
     return { highlightIndex, previewAdd }
   }

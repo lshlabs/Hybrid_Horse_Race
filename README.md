@@ -97,6 +97,31 @@ npm run doctor:runtime
 - `frontend/src/components/game/scenes/race/RaceScene.ts`: 레이스 재생 오케스트레이터
 - `frontend/src/components/game/scenes/race/helpers/*`: authoritative sync/debug/result recovery/augment wait 보조 로직
 
+### 리팩토링 반영 구조
+
+루트 레벨:
+- `frontend/`: React + Vite + Phaser 클라이언트
+- `functions/`: Firebase Functions(도메인별 callable)
+- `shared/race-core/`: 서버/클라이언트 공용 레이스 계산/타입 코어
+- `docs/`: 운영/기술 문서
+
+Functions 내부:
+- `functions/src/domains/`: 비즈니스 도메인 callable 구현
+  - `room-lifecycle.ts`: 세션/방 생성·입장·준비·시작·퇴장
+  - `selection.ts`: 말 선택/증강 선택/리롤
+  - `race-write.ts`: prepare/start/readyNextSet/skipSet
+  - `race-read.ts`: getRaceState/getSetResult
+  - `final-result.ts`: 최종 결과 제출
+- `functions/src/common/`: 인증/가드/응답 빌더/phase 검증 공통 모듈
+- `functions/src/index.ts`: 의존성 wiring + callable export 엔트리
+
+Frontend 내부:
+- `frontend/src/pages/`: 라우트 단위 화면 컴포넌트
+- `frontend/src/components/game/`: Phaser 씬/매니저/UI 렌더링 계층
+- `frontend/src/engine/race/`: 프론트 레이스 엔진 파라미터/타입/도우미
+- `frontend/src/lib/`: Firebase/환경/스토리지 어댑터
+- `frontend/src/hooks/`: Firestore 구독 및 화면 연동 훅
+
 ## 레이스 파이프라인 (Authoritative Replay)
 
 현재 레이스는 서버가 결과를 먼저 계산하고, 클라이언트가 이를 재생하는 구조입니다.
@@ -119,6 +144,38 @@ npm run doctor:runtime
 - `prepared`
 - `running`
 - `completed`
+
+## 서버 Callable API (현재 export 기준)
+
+아래 callable은 `functions/src/index.ts`에서 export되는 현재 엔드포인트 목록입니다.
+
+Room Lifecycle:
+- `createGuestSession`
+- `createRoom`
+- `joinRoom`
+- `updatePlayerName`
+- `setPlayerReady`
+- `leaveRoom`
+- `leaveRoomOnUnload`
+- `updateRoomSettings`
+- `startGame`
+
+Selection:
+- `selectHorse`
+- `getAugmentSelection`
+- `selectAugment`
+- `rerollAugments`
+
+Race:
+- `prepareRace`
+- `startRace`
+- `getRaceState`
+- `getSetResult`
+- `readyNextSet`
+- `skipSet`
+
+Final:
+- `submitFinalRaceResult`
 
 ## 스탯 시스템
 

@@ -12,6 +12,8 @@ export interface Stats {
 
 export type AugmentRarity = 'common' | 'rare' | 'epic' | 'legendary' | 'hidden'
 export type SpecialAbilityType = 'lastSpurt' | 'overtake' | 'escapeCrisis'
+export type PlayerMetricMap = Record<string, number>
+export type PlayerFinishedMap = Record<string, boolean>
 
 export interface Augment {
   id: string
@@ -26,43 +28,44 @@ export interface Augment {
 
 export type RaceScriptKeyframe = {
   elapsedMs: number
-  positions: Record<string, number>
-  speeds: Record<string, number>
-  stamina: Record<string, number>
-  finished: Record<string, boolean>
+  positions: PlayerMetricMap
+  speeds: PlayerMetricMap
+  stamina: PlayerMetricMap
+  finished: PlayerFinishedMap
 }
 
-export type RaceScriptEvent =
-  // 순위가 올라간 순간(추월) 이벤트
-  | {
-      id: string
-      type: 'overtake'
-      elapsedMs: number
-      playerId: string
-      fromRank: number
-      toRank: number
-    }
-  // 막판 스퍼트 시작 이벤트
-  | {
-      id: string
-      type: 'lastSpurt'
-      elapsedMs: number
-      playerId: string
-    }
-  // 완주 이벤트
-  | {
-      id: string
-      type: 'finish'
-      elapsedMs: number
-      playerId: string
-      rank: number
-    }
-  // 결승 직전 연출 트리거(현재는 슬로모 재도입용 데이터로 유지)
-  | {
-      id: string
-      type: 'slowmoTrigger'
-      elapsedMs: number
-    }
+export type OvertakeEvent = {
+  id: string
+  type: 'overtake'
+  elapsedMs: number
+  playerId: string
+  fromRank: number
+  toRank: number
+}
+
+export type LastSpurtEvent = {
+  id: string
+  type: 'lastSpurt'
+  elapsedMs: number
+  playerId: string
+}
+
+export type FinishEvent = {
+  id: string
+  type: 'finish'
+  elapsedMs: number
+  playerId: string
+  rank: number
+}
+
+export type SlowmoTriggerEvent = {
+  id: string
+  type: 'slowmoTrigger'
+  elapsedMs: number
+}
+
+// 순위 상승/막판 스퍼트/완주/슬로모 트리거 이벤트 통합 타입
+export type RaceScriptEvent = OvertakeEvent | LastSpurtEvent | FinishEvent | SlowmoTriggerEvent
 
 export type RaceRanking = {
   playerId: string

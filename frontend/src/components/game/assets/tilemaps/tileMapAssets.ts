@@ -47,7 +47,12 @@ import startBottom from '../../../../assets/images/map/tile/start_bottom.png'
 // 울타리
 import fenceTile from '../../../../assets/images/map/tile/fence.png'
 
-export const tileMapAssetLoaders = [
+export type TileMapAssetLoader = {
+  key: string
+  url: string
+}
+
+const BACKGROUND_TILE_ASSETS: TileMapAssetLoader[] = [
   { key: 'bg1_t1', url: bg1t1 },
   { key: 'bg2_t1', url: bg2t1 },
   { key: 'bg3_t1', url: bg3t1 },
@@ -64,6 +69,9 @@ export const tileMapAssetLoaders = [
   { key: 'bg2_t4', url: bg2t4 },
   { key: 'bg3_t4', url: bg3t4 },
   { key: 'bg4_t4', url: bg4t4 },
+]
+
+const DECORATION_TILE_ASSETS: TileMapAssetLoader[] = [
   { key: 'grass1', url: grass1 },
   { key: 'grass2', url: grass2 },
   { key: 'grass3', url: grass3 },
@@ -76,6 +84,9 @@ export const tileMapAssetLoaders = [
   { key: 'deco4', url: deco4 },
   { key: 'deco5', url: deco5 },
   { key: 'deco6', url: deco6 },
+]
+
+const TRACK_TILE_ASSETS: TileMapAssetLoader[] = [
   { key: 'track_top', url: trackTop },
   { key: 'track1', url: track1 },
   { key: 'track2', url: track2 },
@@ -84,4 +95,10 @@ export const tileMapAssetLoaders = [
   { key: 'start1', url: start1 },
   { key: 'start_bottom', url: startBottom },
   { key: 'fence', url: fenceTile },
+]
+
+export const tileMapAssetLoaders: TileMapAssetLoader[] = [
+  ...BACKGROUND_TILE_ASSETS,
+  ...DECORATION_TILE_ASSETS,
+  ...TRACK_TILE_ASSETS,
 ]

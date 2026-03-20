@@ -31,17 +31,14 @@ import horse8Ready2Url from '../../../../assets/images/horses_new/horse8_ready2.
 import horse8Ready3Url from '../../../../assets/images/horses_new/horse8_ready3.png'
 import horse8RunUrl from '../../../../assets/images/horses_new/horse8_run.png'
 
-/**
- * 말 스프라이트시트 URL 매니페스트.
- * - RaceScene preload에서 순회하며 텍스처를 로드한다.
- * - import를 씬 파일에서 분리해, 에셋 교체 시 수정 지점을 한 곳으로 제한한다.
- */
-export const horseSpriteSheetUrls: {
+type HorseSpriteSheetUrls = {
   ready1: string
   ready2: string
   ready3: string
   run: string
-}[] = [
+}
+
+const HORSE_SPRITE_SHEET_URLS: HorseSpriteSheetUrls[] = [
   { ready1: horse1Ready1Url, ready2: horse1Ready2Url, ready3: horse1Ready3Url, run: horse1RunUrl },
   { ready1: horse2Ready1Url, ready2: horse2Ready2Url, ready3: horse2Ready3Url, run: horse2RunUrl },
   { ready1: horse3Ready1Url, ready2: horse3Ready2Url, ready3: horse3Ready3Url, run: horse3RunUrl },
@@ -51,3 +48,5 @@ export const horseSpriteSheetUrls: {
   { ready1: horse7Ready1Url, ready2: horse7Ready2Url, ready3: horse7Ready3Url, run: horse7RunUrl },
   { ready1: horse8Ready1Url, ready2: horse8Ready2Url, ready3: horse8Ready3Url, run: horse8RunUrl },
 ]
+
+export const horseSpriteSheetUrls = HORSE_SPRITE_SHEET_URLS

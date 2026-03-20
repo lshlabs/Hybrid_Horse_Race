@@ -66,6 +66,34 @@ const ROWS = [
 
 const TRACK_CHUNK = ['track_top', 'track1', 'track2', 'track_bottom'] as const
 const START_END_CHUNK = ['start_top', 'start1', 'start1', 'start_bottom'] as const
+const DEFAULT_PRE_TILES = 3
+const DEFAULT_RACE_TILES = 30
+const DEFAULT_POST_TILES = 3
+const BG_THEME_MIN = 1
+const BG_THEME_COUNT = 4
+const SKY_LAYER_ROW_COUNT = 4
+
+function randomFrom<T>(items: readonly T[]): T {
+  return items[randomInt(items.length)]!
+}
+
+function randomInt(maxExclusive: number): number {
+  return Math.floor(Math.random() * maxExclusive)
+}
+
+function randomIntInclusive(min: number, max: number): number {
+  return min + randomInt(max - min + 1)
+}
+
+function buildTrackSequence(preTiles: number, raceTiles: number, postTiles: number): string[] {
+  return [
+    ...Array(preTiles).fill('T'),
+    'S',
+    ...Array(raceTiles).fill('T'),
+    'E',
+    ...Array(postTiles).fill('T'),
+  ]
+}
 
 /**
  * 타일 기반 맵 매니저
@@ -96,22 +124,16 @@ export default class TileMapManager {
 
   constructor(config: TileMapManagerConfig) {
     this.scene = config.scene
-    const preTiles = config.preTiles ?? 3
-    this.raceTiles = config.raceTiles ?? 30
-    const postTiles = config.postTiles ?? 3
+    const preTiles = config.preTiles ?? DEFAULT_PRE_TILES
+    this.raceTiles = config.raceTiles ?? DEFAULT_RACE_TILES
+    const postTiles = config.postTiles ?? DEFAULT_POST_TILES
 
     // 맵 높이 = 게임 영역 높이 (타일맵 + HUD = 캔버스 높이 720)
     this.mapHeight = config.gameHeight
     this.rowHeight = this.mapHeight / ROWS.length
 
     // 타일 시퀀스: T(일반 트랙), S(출발), E(결승)
-    const seq = [
-      ...Array(preTiles).fill('T'),
-      'S',
-      ...Array(this.raceTiles).fill('T'),
-      'E',
-      ...Array(postTiles).fill('T'),
-    ]
+    const seq = buildTrackSequence(preTiles, this.raceTiles, postTiles)
     // 타일 인덱스: S = preTiles, E = preTiles+1+raceTiles (seq에서 E 위치)
     this.startTileIndex = preTiles
     this.finishTileIndex = preTiles + 1 + this.raceTiles
@@ -125,7 +147,7 @@ export default class TileMapManager {
     this.trackLengthPx = (this.finishTileIndex - this.startTileIndex) * TILE
 
     const grassChunk = this.createUnifiedGrassDecoChunk() // 위 1줄 + 아래 2줄 한 청크
-    const bgTheme = config.bgTheme ?? 1 + Math.floor(Math.random() * 4)
+    const bgTheme = config.bgTheme ?? randomIntInclusive(BG_THEME_MIN, BG_THEME_COUNT)
 
     this.buildBackgroundLayers(bgTheme)
     this.buildRows(grassChunk, seq)
@@ -147,21 +169,18 @@ export default class TileMapManager {
     for (let row = 0; row < GRASS_ROWS; row++) {
       grassChunk.push([])
       for (let c = 0; c < CHUNK_COLS; c++) {
-        grassChunk[row]!.push(GRASS_KEYS[Math.floor(Math.random() * GRASS_KEYS.length)]!)
+        grassChunk[row]!.push(randomFrom(GRASS_KEYS))
       }
     }
-    const count = Math.min(
-      totalTiles,
-      DECO_MIN + Math.floor(Math.random() * (DECO_MAX - DECO_MIN + 1)),
-    )
+    const count = Math.min(totalTiles, randomIntInclusive(DECO_MIN, DECO_MAX))
     const indices = Array.from({ length: totalTiles }, (_, i) => i)
     for (let i = indices.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1))
+      const j = randomInt(i + 1)
       ;[indices[i], indices[j]] = [indices[j]!, indices[i]!]
     }
     const decoChunk = new Array<number>(totalTiles).fill(0)
     for (let k = 0; k < count; k++) {
-      decoChunk[indices[k]!] = DECO_KEYS[Math.floor(Math.random() * DECO_KEYS.length)]!
+      decoChunk[indices[k]!] = randomFrom(DECO_KEYS)
     }
     return { grassChunk, decoChunk }
   }
@@ -171,7 +190,7 @@ export default class TileMapManager {
 
   private buildBackgroundLayers(bgTheme: number): void {
     // sky 배경은 tileSprite + scrollFactor로 패럴랙스만 주고, 실제 레이스 좌표에는 영향이 없다.
-    const SKY_HEIGHT = 4 * this.rowHeight
+    const SKY_HEIGHT = SKY_LAYER_ROW_COUNT * this.rowHeight
     const layerKeys = [
       `bg${bgTheme}_t1`,
       `bg${bgTheme}_t2`,

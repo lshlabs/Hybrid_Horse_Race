@@ -27,6 +27,37 @@ export type SimulationResult = {
   simElapsedSec: number
 }
 
+const INITIAL_HORSE_STAMINA = 100
+const MILLISECONDS_PER_SECOND = 1000
+
+function buildNextSetRuntimeState(state: RaceRuntimeState): RaceRuntimeState {
+  return {
+    ...state,
+    currentSet: state.currentSet + 1,
+    isRaceFinished: false,
+    isRaceStarted: false,
+    isCountdownActive: false,
+    isResultSceneShown: false,
+    isFinishSequenceTriggered: false,
+    finishSequenceDone: false,
+    simTimeAccumulatorSec: 0,
+    simElapsedSec: 0,
+    raceStartTimestampMs: 0,
+  }
+}
+
+function resetSimHorseState(simHorse: ReturnType<HorseManager['getSimHorses']>[number]): void {
+  simHorse.position = 0
+  simHorse.currentSpeed = 0
+  simHorse.finished = false
+  simHorse.finishTime = null
+  simHorse.stamina = INITIAL_HORSE_STAMINA
+  simHorse.maxStamina = INITIAL_HORSE_STAMINA
+  simHorse.conditionRoll = 0
+  simHorse.maxSpeed_ms = 0
+  simHorse.effStats = { ...simHorse.baseStats }
+}
+
 /**
  * 레이스 진행/시뮬레이션/라운드 리셋 전담 컨트롤러.
  * - 씬 바깥에서 순수 로직 중심으로 상태 전이를 계산한다.
@@ -35,7 +66,6 @@ export type SimulationResult = {
 export default class RaceRuntimeController {
   /** 레이스 시작 조건을 확인하고 시작 상태를 반환한다. */
   startRace(state: RaceRuntimeState): RaceRuntimeState {
-    // 이미 시작했거나 카운트다운/증강 선택 중이면 중복 시작을 막는다.
     if (state.isRaceStarted || state.augmentSelectionActive || state.isCountdownActive) {
       return state
     }
@@ -43,7 +73,6 @@ export default class RaceRuntimeController {
     return {
       ...state,
       isRaceStarted: true,
-      // 레이스 시작할 때 시뮬레이션 시간도 같이 0으로 리셋한다.
       simElapsedSec: 0,
       simTimeAccumulatorSec: 0,
       raceStartTimestampMs: performance.now(),
@@ -66,7 +95,7 @@ export default class RaceRuntimeController {
     let simTimeAccumulatorSec = config.state.simTimeAccumulatorSec
     let simElapsedSec = config.state.simElapsedSec
 
-    simTimeAccumulatorSec += (deltaMs / 1000) * simPlaybackScale
+    simTimeAccumulatorSec += (deltaMs / MILLISECONDS_PER_SECOND) * simPlaybackScale
 
     let allFinished = true
     let stepped = false
@@ -74,7 +103,6 @@ export default class RaceRuntimeController {
       stepped = true
       simTimeAccumulatorSec -= physicsDtSec
 
-      // 현재 위치 기준으로 임시 순위를 만든 뒤 rank 관련 능력 효과를 먼저 반영한다.
       const currentRanking = [...simHorses]
         .filter((h) => !h.finished)
         .sort((a, b) => b.position - a.position)
@@ -114,34 +142,13 @@ export default class RaceRuntimeController {
     mapManager.setTilePositionX(0)
     mapManager.updateStripePositions(0)
 
-    // 다음 세트 시작 전에 로컬 시뮬레이션 상태를 초기값으로 되돌린다.
     const simHorses = horseManager.getSimHorses()
     for (const simHorse of simHorses) {
-      simHorse.position = 0
-      simHorse.currentSpeed = 0
-      simHorse.finished = false
-      simHorse.finishTime = null
-      simHorse.stamina = 100
-      simHorse.maxStamina = 100
-      simHorse.conditionRoll = 0
-      simHorse.maxSpeed_ms = 0
-      simHorse.effStats = { ...simHorse.baseStats }
+      resetSimHorseState(simHorse)
     }
 
     horseManager.resetHorsesToIdle()
 
-    return {
-      ...state,
-      currentSet: state.currentSet + 1,
-      isRaceFinished: false,
-      isRaceStarted: false,
-      isCountdownActive: false,
-      isResultSceneShown: false,
-      isFinishSequenceTriggered: false,
-      finishSequenceDone: false,
-      simTimeAccumulatorSec: 0,
-      simElapsedSec: 0,
-      raceStartTimestampMs: 0,
-    }
+    return buildNextSetRuntimeState(state)
   }
 }

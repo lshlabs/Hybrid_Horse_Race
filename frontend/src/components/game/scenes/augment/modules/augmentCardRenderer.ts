@@ -6,6 +6,31 @@ import {
   SPECIAL_ABILITY_DESCRIPTIONS,
 } from '../../../../../engine/race'
 
+const FONT_FAMILY = 'NeoDunggeunmo'
+const TITLE_COLOR = '#ffffff'
+const DESCRIPTION_COLOR = '#cccccc'
+const CARD_TEXT_WRAP_PADDING = 30
+const SPECIAL_ICON_KEY_MAP: Record<string, string> = {
+  lastSpurt: 'special_last_spurt',
+  overtake: 'special_overtake',
+  escapeCrisis: 'special_escape_crisis',
+}
+const SPECIAL_NAME_FONT_SIZE = 20
+const STAT_NAME_FONT_SIZE = 22
+const DESCRIPTION_FONT_SIZE = 14
+
+function hasSpecialAbility(
+  augment: Augment,
+): augment is Augment & { specialAbility: NonNullable<Augment['specialAbility']> } {
+  return !!augment.specialAbility
+}
+
+function hasStatType(
+  augment: Augment,
+): augment is Augment & { statType: NonNullable<Augment['statType']> } {
+  return !!augment.statType
+}
+
 /**
  * 증강 카드 내부 콘텐츠 렌더러.
  * - 카드 배경 외의 "아이콘/이름/설명" 요소만 생성한다.
@@ -38,7 +63,7 @@ export function createAugmentCardContent(config: {
     statIconMap,
   } = config
 
-  if (augment.specialAbility) {
+  if (hasSpecialAbility(augment)) {
     return addSpecialAbilityContent({
       scene,
       container,
@@ -94,9 +119,9 @@ function addSpecialAbilityContent(config: {
     textDescYOffset,
   } = config
 
-  // 엔진 정의 설명문을 그대로 사용해 UI/밸런스 설명을 일치시킨다.
-  const abilityDescription = SPECIAL_ABILITY_DESCRIPTIONS[augment.specialAbility!]
-  const iconKey = getSpecialAbilityIconKey(scene, augment.specialAbility!)
+  if (!hasSpecialAbility(augment)) return
+  const abilityDescription = SPECIAL_ABILITY_DESCRIPTIONS[augment.specialAbility]
+  const iconKey = getSpecialAbilityIconKey(scene, augment.specialAbility)
 
   if (iconKey) {
     const icon = scene.add.image(0, -cardHeight / 2 + 20 + iconYOffset + iconSize / 2, iconKey)
@@ -110,8 +135,8 @@ function addSpecialAbilityContent(config: {
     visualsContainer.add(icon)
   }
 
-  const nameSize = 20
-  const descSize = 14
+  const nameSize = SPECIAL_NAME_FONT_SIZE
+  const descSize = DESCRIPTION_FONT_SIZE
   const nameY = 30 + textNameYOffset
   const descY = cardHeight / 2 - 40 + textDescYOffset
 
@@ -122,9 +147,9 @@ function addSpecialAbilityContent(config: {
 
   const nameText = scene.add
     .text(0, nameY, nameValueStr, {
-      fontFamily: 'NeoDunggeunmo',
+      fontFamily: FONT_FAMILY,
       fontSize: `${nameSize}px`,
-      color: '#ffffff',
+      color: TITLE_COLOR,
       fontStyle: 'bold',
     })
     .setOrigin(0.5)
@@ -132,11 +157,11 @@ function addSpecialAbilityContent(config: {
 
   const descText = scene.add
     .text(0, descY, abilityDescription, {
-      fontFamily: 'NeoDunggeunmo',
+      fontFamily: FONT_FAMILY,
       fontSize: `${descSize}px`,
-      color: '#cccccc',
+      color: DESCRIPTION_COLOR,
       align: 'center',
-      wordWrap: { width: cardWidth - 30 },
+      wordWrap: { width: cardWidth - CARD_TEXT_WRAP_PADDING },
     })
     .setOrigin(0.5)
   container.add(descText)
@@ -170,7 +195,8 @@ function addStatContent(config: {
     statIconMap,
   } = config
 
-  const iconKey = statIconMap[augment.statType!]
+  if (!hasStatType(augment)) return
+  const iconKey = statIconMap[augment.statType]
 
   if (scene.textures.exists(iconKey)) {
     const icon = scene.add.image(0, -cardHeight / 2 + 20 + iconYOffset + iconSize / 2, iconKey)
@@ -178,12 +204,12 @@ function addStatContent(config: {
     visualsContainer.add(icon)
   }
 
-  const nameSize = 22
-  const descSize = 14
+  const nameSize = STAT_NAME_FONT_SIZE
+  const descSize = DESCRIPTION_FONT_SIZE
   const nameY = 30 + textNameYOffset
   const descY = cardHeight / 2 - 40 + textDescYOffset
 
-  const statName = AUGMENT_STAT_NAMES[augment.statType!]
+  const statName = AUGMENT_STAT_NAMES[augment.statType]
   const nameValueStr =
     augment.statValue != null
       ? `${statName} ${augment.statValue > 0 ? '+' : ''}${augment.statValue}`
@@ -191,21 +217,21 @@ function addStatContent(config: {
 
   const nameText = scene.add
     .text(0, nameY, nameValueStr, {
-      fontFamily: 'NeoDunggeunmo',
+      fontFamily: FONT_FAMILY,
       fontSize: `${nameSize}px`,
-      color: '#ffffff',
+      color: TITLE_COLOR,
       fontStyle: 'bold',
     })
     .setOrigin(0.5)
   container.add(nameText)
 
   const descText = scene.add
-    .text(0, descY, AUGMENT_STAT_DESCRIPTIONS[augment.statType!], {
-      fontFamily: 'NeoDunggeunmo',
+    .text(0, descY, AUGMENT_STAT_DESCRIPTIONS[augment.statType], {
+      fontFamily: FONT_FAMILY,
       fontSize: `${descSize}px`,
-      color: '#cccccc',
+      color: DESCRIPTION_COLOR,
       align: 'center',
-      wordWrap: { width: cardWidth - 30 },
+      wordWrap: { width: cardWidth - CARD_TEXT_WRAP_PADDING },
     })
     .setOrigin(0.5)
   container.add(descText)
@@ -213,12 +239,7 @@ function addStatContent(config: {
 
 /** 특수 능력명 -> 아이콘 키 매핑 */
 function getSpecialAbilityIconKey(scene: Phaser.Scene, ability: string): string | null {
-  const keyMap: Record<string, string> = {
-    lastSpurt: 'special_last_spurt',
-    overtake: 'special_overtake',
-    escapeCrisis: 'special_escape_crisis',
-  }
-  const key = keyMap[ability]
+  const key = SPECIAL_ICON_KEY_MAP[ability]
   return key && scene.textures.exists(key) ? key : null
 }
 

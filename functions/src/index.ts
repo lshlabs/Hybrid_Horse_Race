@@ -2,7 +2,14 @@ import { HttpsError } from 'firebase-functions/v2/https'
 import { logger } from 'firebase-functions'
 import { initializeApp } from 'firebase-admin/app'
 import { getFirestore, Timestamp } from 'firebase-admin/firestore'
-import { DEFAULT_OUTPUT_FRAME_MS, DEFAULT_SIM_STEP_MS } from '../../shared/race-core'
+import {
+  DEFAULT_OUTPUT_FRAME_MS,
+  DEFAULT_SIM_STEP_MS,
+  hashStringToUint32,
+  createSeededRandom,
+  randomIntSeeded,
+  pickRandomSeeded,
+} from '../../shared/race-core'
 import {
   getRoom,
   isRoomFull,
@@ -30,6 +37,12 @@ const db = getFirestore()
 const GUEST_SESSION_TTL_DAYS = 14
 const JOIN_TOKEN_TTL_HOURS = 6
 const PLAYER_NAME_PATTERN = /^[A-Za-z0-9가-힣 ]+$/
+const HIDDEN_AUGMENT_CHANCE_LEGENDARY = 0.15
+const HIDDEN_ABILITY_VARIANTS = 3
+const HIDDEN_ABILITY_VALUE_MIN = 6
+const HIDDEN_ABILITY_VALUE_MAX = 10
+const AUGMENT_CHOICES_COUNT = 3
+const AUGMENT_GENERATION_MAX_ATTEMPTS = 256
 
 function normalizePlayerName(rawName: string): string {
   return rawName.trim()
@@ -47,44 +60,6 @@ const AUGMENT_RARITIES: Array<Exclude<AugmentRarity, 'hidden'>> = [
   'legendary',
 ]
 
-function hashStringToUint32(input: string): number {
-  let hash = 2166136261 >>> 0
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i)
-    hash = Math.imul(hash, 16777619)
-  }
-  return hash >>> 0
-}
-
-function createSeededRandom(seed: string): () => number {
-  let state = hashStringToUint32(seed)
-  if (state === 0) {
-    state = 0x9e3779b9
-  }
-
-  return () => {
-    state += 0x6d2b79f5
-    let t = state
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-function randomIntSeeded(min: number, max: number, rng: () => number): number {
-  return Math.floor(rng() * (max - min + 1)) + min
-}
-
-function randomFloatSeeded(min: number, max: number, rng: () => number): number {
-  return rng() * (max - min) + min
-}
-
-function pickRandomSeeded<T>(items: T[], rng: () => number): T {
-  return items[Math.floor(rng() * items.length)]
-}
-
-// 서버 레이스 길이는 프론트 맵 길이와 맞춰 둔다.
-// 현재 RaceScene에서 raceTiles=100 이라서 (100+1)*5m = 505m 기준을 사용한다.
 const SERVER_RACE_TRACK_LENGTH_M = 505
 const SERVER_RACE_SIM_STEP_MS = DEFAULT_SIM_STEP_MS
 const SERVER_RACE_OUTPUT_FRAME_MS = 50
@@ -142,9 +117,9 @@ function createServerHiddenAbilityAugment(
   slotIndex: number,
 ): Augment {
   const roll = rng()
-  const abilityValue = randomIntSeeded(6, 10, rng)
+  const abilityValue = randomIntSeeded(HIDDEN_ABILITY_VALUE_MIN, HIDDEN_ABILITY_VALUE_MAX, rng)
   const baseId = hashStringToUint32(`${seedKey}-hidden-${slotIndex}`)
-  if (roll < 1 / 3) {
+  if (roll < 1 / HIDDEN_ABILITY_VARIANTS) {
     return {
       id: `hidden-lastSpurt-${abilityValue}-${baseId}`,
       name: 'Last Spurt',
@@ -153,7 +128,7 @@ function createServerHiddenAbilityAugment(
       specialAbilityValue: abilityValue,
     }
   }
-  if (roll < 2 / 3) {
+  if (roll < 2 / HIDDEN_ABILITY_VARIANTS) {
     return {
       id: `hidden-overtake-${abilityValue}-${baseId}`,
       name: 'Overtake',
@@ -180,10 +155,9 @@ function generateServerAugmentChoices(
   const uniqueCategoryKeys = new Set<string>()
   let attempt = 0
 
-  // 로컬 게임 규칙과 맞추기 위해 legendary에서는 15% 확률로 hidden 특수 증강 1장을 섞는다.
   if (rarity === 'legendary') {
     const hiddenRoll = rng()
-    if (hiddenRoll < 0.15) {
+    if (hiddenRoll < HIDDEN_AUGMENT_CHANCE_LEGENDARY) {
       const hiddenAugment = createServerHiddenAbilityAugment(rng, seedKey, attempt)
       const categoryKey = `ability:${hiddenAugment.specialAbility ?? 'hidden'}`
       uniqueCategoryKeys.add(categoryKey)
@@ -192,7 +166,7 @@ function generateServerAugmentChoices(
     }
   }
 
-  while (choices.length < 3 && attempt < 256) {
+  while (choices.length < AUGMENT_CHOICES_COUNT && attempt < AUGMENT_GENERATION_MAX_ATTEMPTS) {
     const augment = createServerAugment(rarity, rng, seedKey, attempt)
     const categoryKey = augment.specialAbility
       ? `ability:${augment.specialAbility}`
@@ -205,7 +179,7 @@ function generateServerAugmentChoices(
     attempt += 1
   }
 
-  if (choices.length < 3) {
+  if (choices.length < AUGMENT_CHOICES_COUNT) {
     throw new HttpsError('internal', 'Failed to generate unique augment choices')
   }
 
@@ -340,7 +314,6 @@ const finalResultCallables = createFinalResultCallables({
   assertJoinedRoomHostRequest,
 })
 
-// ==================== 룸 관리 ====================
 export const createGuestSession = roomLifecycleCallables.createGuestSession
 export const createRoom = roomLifecycleCallables.createRoom
 export const joinRoom = roomLifecycleCallables.joinRoom
@@ -350,8 +323,6 @@ export const leaveRoom = roomLifecycleCallables.leaveRoom
 export const leaveRoomOnUnload = roomLifecycleCallables.leaveRoomOnUnload
 export const updateRoomSettings = roomLifecycleCallables.updateRoomSettings
 export const startGame = roomLifecycleCallables.startGame
-
-// ==================== 게임 진행 ====================
 
 export const selectHorse = selectionCallables.selectHorse
 export const getAugmentSelection = selectionCallables.getAugmentSelection
@@ -367,7 +338,5 @@ export const getRaceState = raceReadCallables.getRaceState
 export const getSetResult = raceReadCallables.getSetResult
 
 export const skipSet = raceWriteCallables.skipSet
-
-// ==================== 최종 결과 ====================
 
 export const submitFinalRaceResult = finalResultCallables.submitFinalRaceResult
