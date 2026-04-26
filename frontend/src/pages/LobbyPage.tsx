@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Eye, EyeOff, Copy, Check, Crown, SquarePen } from 'lucide-react'
@@ -177,7 +177,7 @@ export function LobbyPage() {
     roomStatusRef.current = room?.status ?? null
   }, [room?.status])
 
-  const getLeaveRoomUrl = (): string | null => {
+  const getLeaveRoomUrl = useCallback((): string | null => {
     const projectId = getFirebaseApp().options.projectId
     if (!projectId) return null
 
@@ -190,35 +190,38 @@ export function LobbyPage() {
     }
 
     return `https://${region}-${projectId}.cloudfunctions.net/leaveRoomOnUnload`
-  }
+  }, [])
 
-  const postLeaveKeepalive = (payload: {
-    roomId: string
-    playerId: string
-    sessionToken: string
-    joinToken: string
-  }): void => {
-    const url = getLeaveRoomUrl()
-    if (!url) return
+  const postLeaveKeepalive = useCallback(
+    (payload: {
+      roomId: string
+      playerId: string
+      sessionToken: string
+      joinToken: string
+    }): void => {
+      const url = getLeaveRoomUrl()
+      if (!url) return
 
-    const body = JSON.stringify(payload)
+      const body = JSON.stringify(payload)
 
-    if (typeof navigator.sendBeacon === 'function') {
-      const sent = navigator.sendBeacon(url, body)
-      if (sent) return
-    }
+      if (typeof navigator.sendBeacon === 'function') {
+        const sent = navigator.sendBeacon(url, body)
+        if (sent) return
+      }
 
-    void fetch(url, {
-      method: 'POST',
-      body,
-      keepalive: true,
-      mode: 'no-cors',
-    }).catch(() => {
-      // ignore unload-time failure
-    })
-  }
+      void fetch(url, {
+        method: 'POST',
+        body,
+        keepalive: true,
+        mode: 'no-cors',
+      }).catch(() => {
+        // ignore unload-time failure
+      })
+    },
+    [getLeaveRoomUrl],
+  )
 
-  const getWaitingRoomLeavePayload = (): {
+  const getWaitingRoomLeavePayload = useCallback((): {
     roomId: string
     playerId: string
     sessionToken: string
@@ -239,9 +242,9 @@ export function LobbyPage() {
       sessionToken: st,
       joinToken: jt,
     }
-  }
+  }, [])
 
-  const tryLeaveRoomOnExit = (): void => {
+  const tryLeaveRoomOnExit = useCallback((): void => {
     if (hasLeaveSentRef.current) return
     const payload = getWaitingRoomLeavePayload()
     if (!payload) return
@@ -252,11 +255,11 @@ export function LobbyPage() {
       JSON.stringify({ roomId: payload.roomId, at: Date.now() }),
     )
     postLeaveKeepalive(payload)
-  }
+  }, [getWaitingRoomLeavePayload, postLeaveKeepalive])
 
   useEffect(() => {
     return registerWaitingRoomExitLeaveHandlers(tryLeaveRoomOnExit)
-  }, [])
+  }, [tryLeaveRoomOnExit])
 
   useEffect(() => {
     const handleDocumentClickCapture = (event: MouseEvent) => {
@@ -278,7 +281,7 @@ export function LobbyPage() {
     return () => {
       document.removeEventListener('click', handleDocumentClickCapture, true)
     }
-  }, [])
+  }, [tryLeaveRoomOnExit])
 
   useEffect(() => {
     return () => {
@@ -290,21 +293,24 @@ export function LobbyPage() {
         // ignore unmount-time failure
       })
     }
-  }, [])
+  }, [getWaitingRoomLeavePayload])
 
-  const shouldAutoJoinRoom = (): boolean => {
+  const shouldAutoJoinRoom = useCallback((): boolean => {
     if (!roomId || !room || isJoiningRoom) return false
     if (room.status !== ROOM_STATUS_WAITING) return false
     if (!playerId || !sessionToken) return false
     if (joinAttemptCount >= 2) return false
     return true
-  }
+  }, [isJoiningRoom, joinAttemptCount, playerId, room, roomId, sessionToken])
 
-  const handleAutoJoinRoomFailure = (error: unknown) => {
-    setJoinAttemptCount((count) => count + 1)
-    setErrorMessage(t('navigation.createFailed'))
-    console.warn('[LobbyPage] joinRoom callable failed:', error)
-  }
+  const handleAutoJoinRoomFailure = useCallback(
+    (error: unknown) => {
+      setJoinAttemptCount((count) => count + 1)
+      setErrorMessage(t('navigation.createFailed'))
+      console.warn('[LobbyPage] joinRoom callable failed:', error)
+    },
+    [t],
+  )
 
   const reportLobbyActionError = (logMessage: string, error: unknown, messageKey: string) => {
     console.error(logMessage, error)
@@ -325,7 +331,7 @@ export function LobbyPage() {
     return sessionToken
   }
 
-  const runAutoJoinRoom = async () => {
+  const runAutoJoinRoom = useCallback(async () => {
     if (!roomId) return
 
     await withGuestSessionRetry(async (session) => {
@@ -367,9 +373,9 @@ export function LobbyPage() {
       setJoinAttemptCount(0)
       return null
     })
-  }
+  }, [playerId, players, roomId, roomJoinToken, sessionToken])
 
-  const executeJoinRoomAttempt = async () => {
+  const executeJoinRoomAttempt = useCallback(async () => {
     setIsJoiningRoom(true)
     try {
       await runAutoJoinRoom()
@@ -378,7 +384,7 @@ export function LobbyPage() {
     } finally {
       setIsJoiningRoom(false)
     }
-  }
+  }, [handleAutoJoinRoomFailure, runAutoJoinRoom])
 
   useEffect(() => {
     if (!shouldAutoJoinRoom()) return
@@ -393,7 +399,8 @@ export function LobbyPage() {
     isJoiningRoom,
     roomJoinToken,
     joinAttemptCount,
-    t,
+    executeJoinRoomAttempt,
+    shouldAutoJoinRoom,
   ])
 
   useEffect(() => {
