@@ -2,6 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import { Timestamp } from 'firebase-admin/firestore'
 import { z } from 'zod'
 import type { RoomStatus } from '../types'
+import { CALLABLE_OPTIONS } from '../common/cors-options'
 
 type LoggerLike = {
   info: (message: string, context?: Record<string, unknown>) => void
@@ -18,6 +19,7 @@ type FinalResultDeps = {
     playerId: string
     sessionToken: string
     joinToken: string
+    authUid?: string
     hostErrorMessage?: string
   }) => Promise<void>
 }
@@ -45,7 +47,6 @@ const submitFinalRaceResultSchema = z.object({
     }),
   ),
 })
-const CALLABLE_OPTIONS = { region: 'asia-northeast3', cors: true } as const
 const STATUS_FINISHED: RoomStatus = 'finished'
 
 export function createFinalResultCallables(deps: FinalResultDeps) {
@@ -66,20 +67,33 @@ export function createFinalResultCallables(deps: FinalResultDeps) {
     throw new HttpsError('internal', publicMessage)
   }
 
+  function requireAuthUid(request: { auth?: { uid?: string } | null }): string {
+    const authUid = request.auth?.uid
+    if (!authUid) {
+      throw new HttpsError('unauthenticated', 'Authentication required')
+    }
+    return authUid
+  }
+
   const submitFinalRaceResult = onCall(
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const { roomId, playerId, sessionToken, joinToken, finalRankings } = parseOrThrow(
           submitFinalRaceResultSchema,
           request.data,
         )
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         await deps.getRoom(roomId)
         await deps.assertJoinedRoomHostRequest({
           roomId,
           playerId,
           sessionToken,
           joinToken,
+          authUid,
           hostErrorMessage: 'Only host can submit final result',
         })
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Users, Flag, RefreshCw, Plus, Minus } from 'lucide-react'
@@ -29,19 +29,12 @@ function buildRoomTitle(): string {
 export function LandingPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const isDev = import.meta.env.DEV
 
   const [playerCount, setPlayerCount] = useState(DEFAULT_PLAYER_COUNT)
   const [roundCount, setRoundCount] = useState(DEFAULT_ROUND_COUNT)
   const [rerollCount, setRerollCount] = useState(DEFAULT_REROLL_COUNT)
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!isDev) {
-      navigate('/')
-    }
-  }, [isDev, navigate])
 
   const decreaseRounds = () => setRoundCount((prev) => Math.max(prev - 1, MIN_ROUND_COUNT))
   const increaseRounds = () => setRoundCount((prev) => Math.min(prev + 1, MAX_ROUND_COUNT))
@@ -123,16 +116,6 @@ export function LandingPage() {
     } finally {
       setIsCreating(false)
     }
-  }
-
-  if (!isDev) {
-    return (
-      <div className="flex h-screen w-screen items-center justify-center bg-gray-900">
-        <div className="text-center text-white">
-          <p className="text-xl">이 페이지는 개발 모드에서만 사용할 수 있습니다.</p>
-        </div>
-      </div>
-    )
   }
 
   return (

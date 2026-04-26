@@ -45,6 +45,14 @@ export type GetRaceStateSetDocData = {
     status?: 'prepared' | 'running' | 'completed'
     scriptVersion?: string
     raceStateDocVersion?: string
+    payloadDocId?: string
+    payloadFormat?: string
+    keyframeChunkSize?: number
+    keyframeChunkCount?: number
+    eventBucketMs?: number
+    eventChunkCount?: number
+    keyframeCount?: number
+    eventCount?: number
     startedAt?: FirebaseFirestore.Timestamp
     simStepMs?: number
     outputFrameMs?: number
@@ -54,6 +62,7 @@ export type GetRaceStateSetDocData = {
     events?: ServerRaceEvent[]
     slowmoTriggerMs?: number
     inputsSnapshotHash?: string
+    updatedAt?: FirebaseFirestore.Timestamp
   }
 }
 
@@ -113,6 +122,20 @@ function getCumulativeAugmentsForPlayer(params: {
   }, [])
 }
 
+function upperBoundEventElapsed(events: ServerRaceEvent[], targetElapsedMs: number): number {
+  let low = 0
+  let high = events.length
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (events[mid].elapsedMs <= targetElapsedMs) {
+      low = mid + 1
+    } else {
+      high = mid
+    }
+  }
+  return low
+}
+
 export function createResponseBuilders(defaults: ResponseBuilderDefaults) {
   function getSortedSetSummaries(
     snapshot: FirebaseFirestore.QuerySnapshot<FirebaseFirestore.DocumentData>,
@@ -126,6 +149,7 @@ export function createResponseBuilders(defaults: ResponseBuilderDefaults) {
     setIndex: number
     setData: GetRaceStateSetDocData | undefined
     nowMillis?: number
+    eventWindowStartElapsedMs?: number
   }) {
     const raceState = params.setData?.raceState
     const startedAtMillis = raceState?.startedAt?.toMillis?.()
@@ -150,7 +174,13 @@ export function createResponseBuilders(defaults: ResponseBuilderDefaults) {
     const nextKeyframe = keyframes[Math.min(keyframes.length - 1, keyframeIndex + 1)]
     const events = raceState?.events ?? []
     const nextElapsed = nextKeyframe?.elapsedMs ?? keyframe.elapsedMs
-    const eventsWindow = events.filter((event) => event.elapsedMs <= nextElapsed)
+    const endExclusive = upperBoundEventElapsed(events, nextElapsed)
+    const hasStartElapsed = Number.isFinite(params.eventWindowStartElapsedMs)
+    const startExclusive = hasStartElapsed
+      ? upperBoundEventElapsed(events, Number(params.eventWindowStartElapsedMs))
+      : 0
+    const safeStart = Math.max(0, Math.min(startExclusive, endExclusive))
+    const eventsWindow = events.slice(safeStart, endExclusive)
     const status = resolveRaceStateStatus({
       isPrepared,
       keyframeIndex,

@@ -3,6 +3,7 @@ import { Timestamp } from 'firebase-admin/firestore'
 import { z } from 'zod'
 import { buildRaceScript, rollConditionFromSeed } from '../../../shared/race-core'
 import type { Augment, Player, Room, RoomStatus } from '../types'
+import { CALLABLE_OPTIONS } from '../common/cors-options'
 import type { GetSetResultSetSummary } from '../common/response-builders'
 
 type LoggerLike = {
@@ -20,6 +21,7 @@ type RaceWriteDeps = {
     playerId: string
     sessionToken: string
     joinToken: string
+    authUid?: string
     hostErrorMessage?: string
   }) => Promise<void>
   assertJoinedRoomPlayerRequest: (params: {
@@ -27,6 +29,7 @@ type RaceWriteDeps = {
     playerId: string
     sessionToken: string
     joinToken: string
+    authUid?: string
   }) => Promise<void>
   assertExactRoomPhaseAndSetIndex: (params: {
     roomId: string
@@ -66,11 +69,14 @@ const prepareRaceSchema = startRaceSchema
 
 const skipSetSchema = z.object(authenticatedSetRequestSchema)
 const readyNextSetSchema = z.object(authenticatedSetRequestSchema)
-const CALLABLE_OPTIONS = { region: 'asia-northeast3', cors: true } as const
 const STATUS_RACING: RoomStatus = 'racing'
 const STATUS_SET_RESULT: RoomStatus = 'setResult'
 const STATUS_AUGMENT_SELECTION: RoomStatus = 'augmentSelection'
 const STATUS_FINISHED: RoomStatus = 'finished'
+const RACE_STATE_PAYLOAD_DOC_ID = 'payload'
+const RACE_STATE_PAYLOAD_FORMAT_CHUNKED_V2 = 'chunked-v2'
+const RACE_STATE_KEYFRAME_CHUNK_SIZE = 32
+const RACE_STATE_EVENT_BUCKET_MS = 1000
 
 export function createRaceWriteCallables(deps: RaceWriteDeps) {
   function parseOrThrow<T extends z.ZodTypeAny>(schema: T, data: unknown): z.infer<T> {
@@ -90,6 +96,14 @@ export function createRaceWriteCallables(deps: RaceWriteDeps) {
     throw new HttpsError('internal', message)
   }
 
+  function requireAuthUid(request: { auth?: { uid?: string } | null }): string {
+    const authUid = request.auth?.uid
+    if (!authUid) {
+      throw new HttpsError('unauthenticated', 'Authentication required')
+    }
+    return authUid
+  }
+
   function buildPreparedRaceAck(alreadyPrepared: boolean, keyframeCount?: number) {
     return {
       success: true,
@@ -104,19 +118,61 @@ export function createRaceWriteCallables(deps: RaceWriteDeps) {
     }
   }
 
+  function chunkKeyframes(keyframes: ReturnType<typeof buildRaceScript>['keyframes']) {
+    // 조회 시 필요한 구간만 읽을 수 있도록 고정 크기 chunk로 분할 저장한다.
+    const chunks: Array<{
+      chunkIndex: number
+      startIndex: number
+      keyframes: ReturnType<typeof buildRaceScript>['keyframes']
+    }> = []
+    for (let start = 0; start < keyframes.length; start += RACE_STATE_KEYFRAME_CHUNK_SIZE) {
+      const chunkIndex = Math.floor(start / RACE_STATE_KEYFRAME_CHUNK_SIZE)
+      chunks.push({
+        chunkIndex,
+        startIndex: start,
+        keyframes: keyframes.slice(start, start + RACE_STATE_KEYFRAME_CHUNK_SIZE),
+      })
+    }
+    return chunks
+  }
+
+  function bucketEventsByElapsed(events: ReturnType<typeof buildRaceScript>['events']) {
+    // 이벤트는 시간 버킷 단위로 저장해 이벤트 윈도우 조회 fan-out을 낮춘다.
+    const bucketMap = new Map<number, typeof events>()
+    events.forEach((event) => {
+      const bucketStartElapsedMs =
+        Math.floor(event.elapsedMs / RACE_STATE_EVENT_BUCKET_MS) * RACE_STATE_EVENT_BUCKET_MS
+      const existing = bucketMap.get(bucketStartElapsedMs) ?? []
+      existing.push(event)
+      bucketMap.set(bucketStartElapsedMs, existing)
+    })
+    return Array.from(bucketMap.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([bucketStartElapsedMs, bucketEvents]) => ({
+        bucketStartElapsedMs,
+        bucketEndElapsedMs: bucketStartElapsedMs + RACE_STATE_EVENT_BUCKET_MS,
+        eventBucketMs: RACE_STATE_EVENT_BUCKET_MS,
+        events: bucketEvents,
+      }))
+  }
+
   async function buildPreparedRaceForSet(params: {
     roomId: string
     setIndex: number
   }) {
     const { roomId, setIndex } = params
     const roomRef = deps.db.collection('rooms').doc(roomId)
-    const playersSnapshot = await roomRef.collection('players').get()
+    const playersSnapshot = await roomRef.collection('players').select('horseStats').get()
     if (playersSnapshot.size < 2) {
       throw new HttpsError('failed-precondition', 'At least 2 players are required for race')
     }
 
     const raceSeedKey = `race|room:${roomId}|set:${setIndex}`
-    const allSetSnapshot = await roomRef.collection('sets').where('setIndex', '<=', setIndex).get()
+    const allSetSnapshot = await roomRef
+      .collection('sets')
+      .where('setIndex', '<=', setIndex)
+      .select('setIndex', 'selections', 'availableAugmentsByPlayer')
+      .get()
     const allSets = deps.getSortedSetSummaries(allSetSnapshot)
 
     const raceInputs = playersSnapshot.docs.map((doc) => {
@@ -212,16 +268,21 @@ export function createRaceWriteCallables(deps: RaceWriteDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const { roomId, playerId, sessionToken, joinToken, setIndex } = parseOrThrow(
           prepareRaceSchema,
           request.data,
         )
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         const room = await deps.getRoom(roomId)
         await deps.assertJoinedRoomHostRequest({
           roomId,
           playerId,
           sessionToken,
           joinToken,
+          authUid,
           hostErrorMessage: 'Only host can prepare race',
         })
 
@@ -255,16 +316,63 @@ export function createRaceWriteCallables(deps: RaceWriteDeps) {
         }
 
         const prepared = await buildPreparedRaceForSet({ roomId, setIndex })
-        await setDocRef.set(
-          {
-            setIndex,
-            raceResult: prepared.raceResult,
-            raceState: prepared.raceState,
-            status: 'prepared',
-            updatedAt: prepared.now,
-          },
-          { merge: true },
-        )
+        const keyframeChunks = chunkKeyframes(prepared.replayScript.keyframes)
+        const eventBuckets = bucketEventsByElapsed(prepared.replayScript.events)
+        const raceStateMetadata = {
+          status: prepared.raceState.status,
+          scriptVersion: prepared.raceState.scriptVersion,
+          raceStateDocVersion: prepared.raceState.raceStateDocVersion,
+          payloadFormat: RACE_STATE_PAYLOAD_FORMAT_CHUNKED_V2,
+          simStepMs: prepared.raceState.simStepMs,
+          outputFrameMs: prepared.raceState.outputFrameMs,
+          tickIntervalMs: prepared.raceState.tickIntervalMs,
+          trackLengthM: prepared.raceState.trackLengthM,
+          slowmoTriggerMs: prepared.raceState.slowmoTriggerMs,
+          seedBundle: prepared.raceState.seedBundle,
+          inputsSnapshotHash: prepared.raceState.inputsSnapshotHash,
+          deterministicMeta: prepared.raceState.deterministicMeta,
+          updatedAt: prepared.raceState.updatedAt,
+          payloadDocId: RACE_STATE_PAYLOAD_DOC_ID,
+          keyframeChunkSize: RACE_STATE_KEYFRAME_CHUNK_SIZE,
+          eventBucketMs: RACE_STATE_EVENT_BUCKET_MS,
+          keyframeCount: prepared.replayScript.keyframes.length,
+          keyframeChunkCount: Math.ceil(
+            prepared.replayScript.keyframes.length / RACE_STATE_KEYFRAME_CHUNK_SIZE,
+          ),
+          eventCount: prepared.replayScript.events.length,
+          eventChunkCount: eventBuckets.length,
+        }
+
+        // 분리 payload와 메타 문서를 병렬 저장해 prepareRace 지연을 최소화한다.
+        const writeTasks: Array<Promise<unknown>> = [
+          ...keyframeChunks.map((chunk) =>
+            setDocRef.collection('raceStatePayloadKeyframes').doc(`chunk-${chunk.chunkIndex}`).set({
+              ...chunk,
+              updatedAt: prepared.now,
+            }),
+          ),
+          ...eventBuckets.map((bucket) =>
+            setDocRef
+              .collection('raceStatePayloadEvents')
+              .doc(`bucket-${bucket.bucketStartElapsedMs}`)
+              .set({
+                ...bucket,
+                updatedAt: prepared.now,
+              }),
+          ),
+          setDocRef.set(
+            {
+              setIndex,
+              raceResult: prepared.raceResult,
+              raceState: raceStateMetadata,
+              status: 'prepared',
+              updatedAt: prepared.now,
+            },
+            { merge: true },
+          ),
+        ]
+
+        await Promise.all(writeTasks)
 
         deps.logger.info('Race prepared', {
           roomId,
@@ -274,6 +382,7 @@ export function createRaceWriteCallables(deps: RaceWriteDeps) {
           scriptVersion: deps.serverRaceScriptVersion,
           raceStateDocVersion: deps.serverRaceStateDocVersion,
           keyframeCount: prepared.replayScript.keyframes.length,
+          payloadDocId: RACE_STATE_PAYLOAD_DOC_ID,
         })
 
         return buildPreparedRaceAck(false, prepared.replayScript.keyframes.length)
@@ -288,16 +397,21 @@ export function createRaceWriteCallables(deps: RaceWriteDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const { roomId, playerId, sessionToken, joinToken, setIndex } = parseOrThrow(
           startRaceSchema,
           request.data,
         )
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         const room = await deps.getRoom(roomId)
         await deps.assertJoinedRoomHostRequest({
           roomId,
           playerId,
           sessionToken,
           joinToken,
+          authUid,
           hostErrorMessage: 'Only host can start race',
         })
 
@@ -407,10 +521,14 @@ export function createRaceWriteCallables(deps: RaceWriteDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const { roomId, playerId, sessionToken, joinToken, setIndex } = parseOrThrow(
           readyNextSetSchema,
           request.data,
         )
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         const room = await deps.getRoom(roomId)
         deps.logger.info('readyNextSet request received', {
           roomId,
@@ -419,7 +537,7 @@ export function createRaceWriteCallables(deps: RaceWriteDeps) {
           roomCurrentSet: room.currentSet,
           roomStatus: room.status,
         })
-        await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken })
+        await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken, authUid })
 
         deps.assertExactRoomPhaseAndSetIndex({
           roomId,
@@ -441,7 +559,11 @@ export function createRaceWriteCallables(deps: RaceWriteDeps) {
         const allReady = await deps.db.runTransaction(async (tx) => {
           const setDoc = await tx.get(setDocRef)
           const setData = setDoc.data() as { readyForNext?: Record<string, boolean> } | undefined
-          const readyForNext = { ...(setData?.readyForNext ?? {}), [playerId]: true }
+          const existingReadyForNext = setData?.readyForNext ?? {}
+          if (existingReadyForNext[playerId] === true) {
+            return playerIds.every((id) => existingReadyForNext[id] === true)
+          }
+          const readyForNext = { ...existingReadyForNext, [playerId]: true }
           tx.set(
             setDocRef,
             {
@@ -535,16 +657,21 @@ export function createRaceWriteCallables(deps: RaceWriteDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const { roomId, playerId, sessionToken, joinToken, setIndex } = parseOrThrow(
           skipSetSchema,
           request.data,
         )
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         const room = await deps.getRoom(roomId)
         await deps.assertJoinedRoomHostRequest({
           roomId,
           playerId,
           sessionToken,
           joinToken,
+          authUid,
           hostErrorMessage: 'Only host can skip set',
         })
 

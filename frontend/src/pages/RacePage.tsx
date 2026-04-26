@@ -71,7 +71,7 @@ export function RacePage() {
   const [sessionToken, setSessionToken] = useState('')
   const roomJoinToken = roomId ? getRoomJoinToken(roomId) : null
   const { room, players, loading } = useRoom(roomId)
-  const isDev = true
+  const isDev = import.meta.env.DEV
 
   const navigateWithRoomAndPlayer = (pathname: '/lobby' | '/horse-selection' | '/race-result') => {
     if (!roomId || !playerId) return
@@ -297,16 +297,6 @@ export function RacePage() {
   })()
 
   const finalMockPlayers = players.length > 0 ? players : localizedMockPlayers
-
-  if (!isDev) {
-    return (
-      <div className="flex h-screen w-screen items-center justify-center bg-gray-900">
-        <div className="text-center text-white">
-          <p className="text-xl">이 페이지는 개발 모드에서만 사용할 수 있습니다.</p>
-        </div>
-      </div>
-    )
-  }
 
   return (
     <div className="flex w-full flex-1 items-center justify-center overflow-hidden">

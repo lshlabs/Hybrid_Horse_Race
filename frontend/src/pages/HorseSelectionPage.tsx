@@ -201,7 +201,7 @@ export function HorseSelectionPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const isDev = true
+  const isDev = import.meta.env.DEV
 
   const roomId = searchParams.get('roomId')
   const [playerId, setPlayerId] = useState(localStorage.getItem('dev_player_id') || '')
@@ -259,12 +259,6 @@ export function HorseSelectionPage() {
       navigateWithRoomAndPlayer('/race-result')
     }
   }
-
-  useEffect(() => {
-    if (!isDev) {
-      navigate('/')
-    }
-  }, [isDev, navigate])
 
   useEffect(() => {
     if (!roomId) {
@@ -513,16 +507,6 @@ export function HorseSelectionPage() {
     } finally {
       setIsSubmitting(false)
     }
-  }
-
-  if (!isDev) {
-    return (
-      <div className="flex h-screen w-screen items-center justify-center bg-gray-900">
-        <div className="text-center text-white">
-          <p className="text-xl">이 페이지는 개발 모드에서만 사용할 수 있습니다.</p>
-        </div>
-      </div>
-    )
   }
 
   return (

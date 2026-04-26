@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from 'crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'crypto'
+import { FieldValue } from 'firebase-admin/firestore'
 import { HttpsError } from 'firebase-functions/v2/https'
 
 type TimestampApi = {
@@ -25,6 +26,18 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
 }
 
+function safeEqualHashHex(left: string, right: string): boolean {
+  if (left.length !== right.length) {
+    return false
+  }
+
+  try {
+    return timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'))
+  } catch {
+    return false
+  }
+}
+
 function isExpired(expireAt: FirebaseFirestore.Timestamp | undefined, nowMillis: number): boolean {
   return expireAt != null && expireAt.toMillis() <= nowMillis
 }
@@ -38,9 +51,14 @@ export function createAuthHelpers(deps: AuthHelperDeps) {
     return createOpaqueToken()
   }
 
+  function hashSessionToken(sessionToken: string): string {
+    return hashToken(sessionToken)
+  }
+
   async function issueRoomJoinToken(
     roomId: string,
     playerId: string,
+    authUid: string,
   ): Promise<{ joinToken: string; expiresAtMillis: number }> {
     const joinToken = createOpaqueToken()
     const now = deps.timestamp.now()
@@ -51,6 +69,7 @@ export function createAuthHelpers(deps: AuthHelperDeps) {
 
     await authRef.set({
       tokenHash: hashToken(joinToken),
+      authUid,
       tokenVersion: currentVersion + 1,
       issuedAt: now,
       expiresAt,
@@ -68,6 +87,7 @@ export function createAuthHelpers(deps: AuthHelperDeps) {
     roomId: string,
     playerId: string,
     joinToken: string,
+    authUid?: string,
   ): Promise<void> {
     const authRef = deps.db.collection('rooms').doc(roomId).collection('participantAuth').doc(playerId)
     const authDoc = await authRef.get()
@@ -79,6 +99,7 @@ export function createAuthHelpers(deps: AuthHelperDeps) {
 
     const authData = authDoc.data() as {
       tokenHash?: string
+      authUid?: string
       expiresAt?: FirebaseFirestore.Timestamp
       status?: 'active' | 'revoked'
     }
@@ -88,7 +109,9 @@ export function createAuthHelpers(deps: AuthHelperDeps) {
       throw new HttpsError('permission-denied', 'Room join token revoked')
     }
 
-    if (authData.tokenHash !== hashToken(joinToken)) {
+    const storedHash = authData.tokenHash
+    const presentedHash = hashToken(joinToken)
+    if (!storedHash || !safeEqualHashHex(storedHash, presentedHash)) {
       deps.logWarn('auth.joinToken.invalid', { roomId, playerId })
       throw new HttpsError('permission-denied', 'Invalid room join token')
     }
@@ -98,6 +121,15 @@ export function createAuthHelpers(deps: AuthHelperDeps) {
     if (isExpired(authData.expiresAt, nowMillis)) {
       deps.logWarn('auth.joinToken.expired', { roomId, playerId })
       throw new HttpsError('permission-denied', 'Room join token expired')
+    }
+
+    if (authUid && authData.authUid && authData.authUid !== authUid) {
+      deps.logWarn('auth.joinToken.authUidMismatch', {
+        roomId,
+        playerId,
+        expectedAuthUid: authData.authUid,
+      })
+      throw new HttpsError('permission-denied', 'Room join token owner mismatch')
     }
 
     await authRef.update({ lastSeenAt: now })
@@ -113,13 +145,9 @@ export function createAuthHelpers(deps: AuthHelperDeps) {
     }
 
     const session = sessionDoc.data() as {
-      sessionToken: string
+      sessionTokenHash?: string
+      sessionToken?: string
       expiresAt?: FirebaseFirestore.Timestamp
-    }
-
-    if (session.sessionToken !== sessionToken) {
-      deps.logWarn('auth.guestSession.invalid', { playerId })
-      throw new HttpsError('permission-denied', 'Invalid guest session token')
     }
 
     const now = deps.timestamp.now()
@@ -128,12 +156,42 @@ export function createAuthHelpers(deps: AuthHelperDeps) {
       throw new HttpsError('unauthenticated', 'Guest session expired')
     }
 
-    await sessionRef.update({ lastSeenAt: now })
+    const presentedHash = hashToken(sessionToken)
+    const storedHash = session.sessionTokenHash
+    const legacyToken = session.sessionToken
+
+    if (storedHash) {
+      if (!safeEqualHashHex(storedHash, presentedHash)) {
+        deps.logWarn('auth.guestSession.invalid', { playerId, mode: 'hash' })
+        throw new HttpsError('permission-denied', 'Invalid guest session token')
+      }
+      await sessionRef.update({ lastSeenAt: now })
+      return
+    }
+
+    if (legacyToken) {
+      const legacyHash = hashToken(legacyToken)
+      if (!safeEqualHashHex(legacyHash, presentedHash)) {
+        deps.logWarn('auth.guestSession.invalid', { playerId, mode: 'legacy' })
+        throw new HttpsError('permission-denied', 'Invalid guest session token')
+      }
+
+      await sessionRef.update({
+        sessionTokenHash: legacyHash,
+        sessionToken: FieldValue.delete(),
+        lastSeenAt: now,
+      })
+      return
+    }
+
+    deps.logWarn('auth.guestSession.invalid', { playerId, mode: 'missing-token' })
+    throw new HttpsError('permission-denied', 'Invalid guest session token')
   }
 
   return {
     createGuestId,
     createSessionToken,
+    hashSessionToken,
     issueRoomJoinToken,
     verifyRoomJoinToken,
     verifyGuestSession,

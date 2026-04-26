@@ -1,20 +1,10 @@
-/**
- * 개발용 로비 페이지 테스트
- * Firebase 없이도 로비 기능을 테스트할 수 있습니다.
- *
- * 사용법:
- * 1. 개발 서버 실행: npm run dev
- * 2. 브라우저에서 /lobby?roomId=test-room 접근
- * 3. 로비 기능 테스트 (Mock 데이터 사용)
- */
-
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Eye, EyeOff, Copy, Check, Crown, SquarePen } from 'lucide-react'
 import clsx from 'clsx'
 import { withGuestSessionRetry } from '../lib/user-id'
-import { useRoom, type Room, type Player, type RoomStatus } from '../hooks/useRoom'
+import { useRoom, type Player, type RoomStatus } from '../hooks/useRoom'
 import { getFirebaseApp } from '../lib/firebase'
 import {
   joinRoom as joinRoomCallable,
@@ -24,11 +14,6 @@ import {
   updatePlayerName as updatePlayerNameCallable,
 } from '../lib/firebase-functions'
 import { getRoomJoinToken, setRoomJoinToken } from '../lib/room-join-token'
-import {
-  generateNicknameData,
-  formatNickname,
-  type NicknameData,
-} from '../utils/nickname-generator'
 import { resolvePlayerDisplayName } from '../lib/player-name'
 import { Spinner } from '../components/ui/Spinner'
 import { Badge } from '../components/ui/badge'
@@ -43,61 +28,19 @@ import {
 import { Input } from '../components/ui/input'
 import { Button } from '../components/ui/button'
 
-// Mock 데이터 생성 함수
-function createMockRoom(roomId: string): Room {
-  return {
-    title: `테스트 룸 (${roomId})`,
-    maxPlayers: 2,
-    roundCount: 3,
-    rerollLimit: 2,
-    rerollUsed: 0,
-    status: ROOM_STATUS_WAITING,
-    currentSet: 1,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  }
-}
-
-function createMockPlayers(playerId: string): Player[] {
-  // 처음 로비 생성 시 호스트만 생성 (다른 플레이어들은 연결 중 상태)
-  const players: Player[] = []
-  // 호스트 기본 닉네임은 실제 경로와 동일하게 playerId 기반으로 고정한다.
-  players.push({
-    id: playerId || 'test-host-id',
-    name: resolvePlayerDisplayName(playerId || 'test-host-id'),
-    isHost: true,
-    isReady: true, // 호스트는 기본적으로 준비됨
-    selectedAugments: [],
-    joinedAt: new Date(),
-  })
-  return players
-}
-
 function registerWaitingRoomExitLeaveHandlers(onLeave: () => void): () => void {
-  const handleVisibilityChange = () => {
-    if (document.visibilityState === 'hidden') {
-      onLeave()
-    }
-  }
-
   window.addEventListener('pagehide', onLeave)
   window.addEventListener('beforeunload', onLeave)
-  document.addEventListener('visibilitychange', handleVisibilityChange)
 
   return () => {
     window.removeEventListener('pagehide', onLeave)
     window.removeEventListener('beforeunload', onLeave)
-    document.removeEventListener('visibilitychange', handleVisibilityChange)
   }
 }
 
-const DEFAULT_ROOM_CONFIG = {
-  playerCount: 2,
-  roundCount: 3,
-  rerollLimit: 2,
-}
 const RELOAD_REDIRECT_KEY = 'lobby.reload.redirect'
 const RELOAD_REDIRECT_WINDOW_MS = 10000
+
 const ROOM_STATUS_WAITING: RoomStatus = 'waiting'
 const ROOM_STATUS_HORSE_SELECTION: RoomStatus = 'horseSelection'
 const ROOM_STATUS_AUGMENT_SELECTION: RoomStatus = 'augmentSelection'
@@ -108,19 +51,7 @@ const ROOM_STATUS_FINISHED: RoomStatus = 'finished'
 const NAME_MIN_LENGTH = 2
 const NAME_MAX_LENGTH = 12
 const NAME_PATTERN = /^[a-zA-Z0-9가-힣\s]+$/
-
-function readDevRoomConfig() {
-  try {
-    const saved = localStorage.getItem('dev_room_config')
-    if (saved) {
-      return JSON.parse(saved)
-    }
-  } catch (err) {
-    console.warn('[LobbyPageTest] Failed to load room config from localStorage:', err)
-  }
-
-  return DEFAULT_ROOM_CONFIG
-}
+const AUTO_JOIN_DEDUPE_WINDOW_MS = 2000
 
 function validatePlayerName(name: string): boolean {
   if (name.length < NAME_MIN_LENGTH || name.length > NAME_MAX_LENGTH) return false
@@ -140,31 +71,49 @@ function getPlayerNameErrorMessage(name: string): string | null {
   return '숫자, 영어, 한글, 공백만 사용할 수 있습니다.'
 }
 
+type LobbyConnectionState =
+  | 'bootstrapping'
+  | 'syncing'
+  | 'joining'
+  | 'reconnecting'
+  | 'joined'
+  | 'left'
+  | 'error'
+
 export function LobbyPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const location = useLocation()
   const [searchParams] = useSearchParams()
-  const isDev = true
 
   const roomId = searchParams.get('roomId')
   const { room, players, loading, error: roomError } = useRoom(roomId)
-  const hasRealtimeData = room !== null && players.length > 0
-  const [resolvedPlayerId, setResolvedPlayerId] = useState<string>(
-    localStorage.getItem('dev_player_id') || '',
-  )
+
+  const [playerId, setPlayerId] = useState<string>('')
   const [sessionToken, setSessionToken] = useState<string>('')
   const [roomJoinToken, setRoomJoinTokenState] = useState<string | null>(
     roomId ? getRoomJoinToken(roomId) : null,
   )
   const [isJoiningRoom, setIsJoiningRoom] = useState(false)
   const [joinAttemptCount, setJoinAttemptCount] = useState(0)
+  const [isTogglingReady, setIsTogglingReady] = useState(false)
+  const [isStarting, setIsStarting] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [isCopied, setIsCopied] = useState(false)
+  const [isUrlVisible, setIsUrlVisible] = useState(false)
+  const [isNameEditDialogOpen, setIsNameEditDialogOpen] = useState(false)
+  const [editingPlayerId, setEditingPlayerId] = useState<string | null>(null)
+  const [newPlayerName, setNewPlayerName] = useState('')
+  const [isComposing, setIsComposing] = useState(false)
+  const [lobbyConnectionState, setLobbyConnectionState] =
+    useState<LobbyConnectionState>('bootstrapping')
+
   const hasLeaveSentRef = useRef(false)
   const roomIdRef = useRef<string | null>(null)
   const playerIdRef = useRef<string>('')
   const sessionTokenRef = useRef<string>('')
   const roomJoinTokenRef = useRef<string | null>(null)
   const roomStatusRef = useRef<RoomStatus | null>(null)
+  const lastAutoJoinAttemptRef = useRef<{ key: string; at: number } | null>(null)
 
   useEffect(() => {
     const navigationEntry = performance
@@ -192,10 +141,9 @@ export function LobbyPage() {
     }
   }, [navigate, roomId])
 
-  // 현재 브라우저 세션의 게스트 식별자를 사용
   useEffect(() => {
     void withGuestSessionRetry(async (session) => {
-      setResolvedPlayerId(session.guestId)
+      setPlayerId(session.guestId)
       setSessionToken(session.sessionToken)
       return null
     })
@@ -207,9 +155,7 @@ export function LobbyPage() {
 
   useEffect(() => {
     setJoinAttemptCount(0)
-  }, [roomId, resolvedPlayerId])
-
-  const playerId = resolvedPlayerId
+  }, [roomId, playerId])
 
   useEffect(() => {
     roomIdRef.current = roomId
@@ -234,6 +180,7 @@ export function LobbyPage() {
   const getLeaveRoomUrl = (): string | null => {
     const projectId = getFirebaseApp().options.projectId
     if (!projectId) return null
+
     const region = 'asia-northeast3'
     const useEmulator = import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true'
     if (useEmulator) {
@@ -241,6 +188,7 @@ export function LobbyPage() {
       const emulatorPort = Number(import.meta.env.VITE_FIREBASE_FUNCTIONS_EMULATOR_PORT || 5001)
       return `http://${emulatorHost}:${emulatorPort}/${projectId}/${region}/leaveRoomOnUnload`
     }
+
     return `https://${region}-${projectId}.cloudfunctions.net/leaveRoomOnUnload`
   }
 
@@ -252,9 +200,9 @@ export function LobbyPage() {
   }): void => {
     const url = getLeaveRoomUrl()
     if (!url) return
+
     const body = JSON.stringify(payload)
 
-    // unload 상황에서는 preflight까지 기다리기 어려워서 text/plain 형태로 보낸다.
     if (typeof navigator.sendBeacon === 'function') {
       const sent = navigator.sendBeacon(url, body)
       if (sent) return
@@ -266,7 +214,7 @@ export function LobbyPage() {
       keepalive: true,
       mode: 'no-cors',
     }).catch(() => {
-      // 페이지 종료 직전 실패는 다시 처리하기 어려워서 무시한다.
+      // ignore unload-time failure
     })
   }
 
@@ -282,6 +230,7 @@ export function LobbyPage() {
     const pid = playerIdRef.current
     const st = sessionTokenRef.current
     const jt = roomJoinTokenRef.current
+
     if (!rid || !pid || !st || !jt) return null
 
     return {
@@ -296,6 +245,7 @@ export function LobbyPage() {
     if (hasLeaveSentRef.current) return
     const payload = getWaitingRoomLeavePayload()
     if (!payload) return
+
     hasLeaveSentRef.current = true
     sessionStorage.setItem(
       RELOAD_REDIRECT_KEY,
@@ -304,18 +254,10 @@ export function LobbyPage() {
     postLeaveKeepalive(payload)
   }
 
-  // 현재 브라우저 playerId를 저장해 두면 다음 화면/재접속에서 재사용하기 쉽다.
-  useEffect(() => {
-    if (!playerId) return
-    localStorage.setItem('dev_player_id', playerId)
-  }, [playerId])
-
-  // 탭 종료/새로고침 때 waiting 상태 참가자를 서버에서 정리하려고 이벤트를 등록한다.
   useEffect(() => {
     return registerWaitingRoomExitLeaveHandlers(tryLeaveRoomOnExit)
   }, [])
 
-  // 외부 링크로 나갈 때는 unload 전에 먼저 leave를 보내 보려고 클릭 캡처를 사용한다.
   useEffect(() => {
     const handleDocumentClickCapture = (event: MouseEvent) => {
       const target = event.target as Element | null
@@ -328,7 +270,7 @@ export function LobbyPage() {
           tryLeaveRoomOnExit()
         }
       } catch {
-        // 잘못된 URL이면 그냥 무시
+        // ignore malformed url
       }
     }
 
@@ -338,10 +280,6 @@ export function LobbyPage() {
     }
   }, [])
 
-  // TODO(multiplayer):
-  // 네트워크 끊김은 unload만으로 못 잡을 수 있어서 나중에 heartbeat + TTL 정리가 필요하다.
-
-  // SPA 내부 이동으로 컴포넌트가 사라질 때도 waiting 상태면 leaveRoom을 한 번 더 시도한다.
   useEffect(() => {
     return () => {
       if (hasLeaveSentRef.current) return
@@ -349,7 +287,7 @@ export function LobbyPage() {
       if (!payload) return
       hasLeaveSentRef.current = true
       void leaveRoomCallable(payload).catch(() => {
-        // 언마운트 중 실패는 복구하기 어려워서 무시
+        // ignore unmount-time failure
       })
     }
   }, [])
@@ -357,6 +295,7 @@ export function LobbyPage() {
   const shouldAutoJoinRoom = (): boolean => {
     if (!roomId || !room || isJoiningRoom) return false
     if (room.status !== ROOM_STATUS_WAITING) return false
+    if (!playerId || !sessionToken) return false
     if (joinAttemptCount >= 2) return false
     return true
   }
@@ -373,7 +312,7 @@ export function LobbyPage() {
   }
 
   const requireRealtimeRoomActionRoomId = (): string => {
-    if (!hasRealtimeData || !roomId) {
+    if (!roomId || !room) {
       throw new Error('Room is not ready for realtime actions')
     }
     return roomId
@@ -381,7 +320,7 @@ export function LobbyPage() {
 
   const requireSessionToken = (): string => {
     if (!sessionToken) {
-      throw new Error('Missing session/join token')
+      throw new Error('Missing session token')
     }
     return sessionToken
   }
@@ -392,8 +331,8 @@ export function LobbyPage() {
     await withGuestSessionRetry(async (session) => {
       const activePlayerId = session.guestId
 
-      if (resolvedPlayerId !== activePlayerId) {
-        setResolvedPlayerId(activePlayerId)
+      if (playerId !== activePlayerId) {
+        setPlayerId(activePlayerId)
       }
       if (sessionToken !== session.sessionToken) {
         setSessionToken(session.sessionToken)
@@ -403,6 +342,17 @@ export function LobbyPage() {
       if (isAlreadyInRoom && roomJoinToken) {
         return null
       }
+
+      const autoJoinAttemptKey = `${roomId}:${activePlayerId}:${session.sessionToken}`
+      const previousAttempt = lastAutoJoinAttemptRef.current
+      const now = Date.now()
+      const isDuplicateInWindow =
+        previousAttempt?.key === autoJoinAttemptKey &&
+        now - previousAttempt.at < AUTO_JOIN_DEDUPE_WINDOW_MS
+      if (isDuplicateInWindow) {
+        return null
+      }
+      lastAutoJoinAttemptRef.current = { key: autoJoinAttemptKey, at: now }
 
       const playerName = resolvePlayerDisplayName(activePlayerId)
       const response = await joinRoomCallable({
@@ -419,22 +369,26 @@ export function LobbyPage() {
     })
   }
 
-  // 룸 링크로 진입한 플레이어를 자동 참가 처리
+  const executeJoinRoomAttempt = async () => {
+    setIsJoiningRoom(true)
+    try {
+      await runAutoJoinRoom()
+    } catch (error) {
+      handleAutoJoinRoomFailure(error)
+    } finally {
+      setIsJoiningRoom(false)
+    }
+  }
+
   useEffect(() => {
     if (!shouldAutoJoinRoom()) return
 
-    setIsJoiningRoom(true)
-
-    void runAutoJoinRoom()
-      .catch(handleAutoJoinRoomFailure)
-      .finally(() => {
-        setIsJoiningRoom(false)
-      })
+    void executeJoinRoomAttempt()
   }, [
     roomId,
     room,
     players,
-    resolvedPlayerId,
+    playerId,
     sessionToken,
     isJoiningRoom,
     roomJoinToken,
@@ -442,49 +396,57 @@ export function LobbyPage() {
     t,
   ])
 
-  const roomConfig = useMemo(() => readDevRoomConfig(), [])
-
-  const playerCount = roomConfig.playerCount
-  const roundCount = room?.roundCount ?? roomConfig.roundCount
-  const rerollLimit = room?.rerollLimit ?? roomConfig.rerollLimit
-
-  // Mock 데이터 (localStorage에서 가져온 정보 사용)
-  const mockRoom = {
-    ...createMockRoom(roomId || 'test-room-123'),
-    maxPlayers: playerCount,
-    roundCount,
-    rerollLimit,
-  }
-  const effectiveMaxPlayers = room?.maxPlayers ?? playerCount
-  const [mockPlayers, setMockPlayers] = useState<Player[]>(() => {
-    const fresh = createMockPlayers(playerId || 'test-host-id')
-    try {
-      const customNames: Record<string, string> = JSON.parse(
-        localStorage.getItem('dev_player_custom_names') || '{}',
-      )
-      const nicknameDataMap: Record<string, NicknameData> = JSON.parse(
-        localStorage.getItem('dev_player_nickname_data') || '{}',
-      )
-      return fresh.map((p) => {
-        if (!p.id) return p
-        if (customNames[p.id]) return { ...p, name: customNames[p.id] }
-        if (nicknameDataMap[p.id]) return { ...p, name: formatNickname(nicknameDataMap[p.id]) }
-        return p
-      })
-    } catch {
-      return fresh
+  useEffect(() => {
+    if (!roomId) {
+      setLobbyConnectionState('left')
+      return
     }
-  })
+    if (roomError) {
+      setLobbyConnectionState('error')
+      return
+    }
+    if (!playerId || !sessionToken) {
+      setLobbyConnectionState('bootstrapping')
+      return
+    }
+    if (loading) {
+      setLobbyConnectionState(joinAttemptCount > 0 ? 'reconnecting' : 'syncing')
+      return
+    }
+    if (!room) {
+      setLobbyConnectionState('error')
+      return
+    }
+    if (room.status !== ROOM_STATUS_WAITING) {
+      setLobbyConnectionState('joined')
+      return
+    }
 
-  const [isTogglingReady, setIsTogglingReady] = useState(false)
-  const [isStarting, setIsStarting] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [isCopied, setIsCopied] = useState(false)
-  const [isUrlVisible, setIsUrlVisible] = useState(false)
-  const [isNameEditDialogOpen, setIsNameEditDialogOpen] = useState(false)
-  const [editingPlayerId, setEditingPlayerId] = useState<string | null>(null)
-  const [newPlayerName, setNewPlayerName] = useState('')
-  const [isComposing, setIsComposing] = useState(false)
+    const hasCurrentPlayerInRoom = players.some((player) => player.id === playerId)
+    if (hasCurrentPlayerInRoom) {
+      setLobbyConnectionState('joined')
+      return
+    }
+    if (isJoiningRoom) {
+      setLobbyConnectionState(joinAttemptCount > 0 ? 'reconnecting' : 'joining')
+      return
+    }
+    if (joinAttemptCount < 2) {
+      setLobbyConnectionState(joinAttemptCount > 0 ? 'reconnecting' : 'joining')
+      return
+    }
+    setLobbyConnectionState('error')
+  }, [
+    roomId,
+    roomError,
+    playerId,
+    sessionToken,
+    loading,
+    room,
+    players,
+    isJoiningRoom,
+    joinAttemptCount,
+  ])
 
   const shouldRefreshJoinToken = (error: unknown): boolean => {
     if (!error || typeof error !== 'object') return false
@@ -510,12 +472,14 @@ export function LobbyPage() {
     if (!roomJoinToken) {
       throw new Error('Missing room join token')
     }
+
     try {
       return await operation(roomJoinToken)
     } catch (error) {
       if (!shouldRefreshJoinToken(error)) {
         throw error
       }
+
       const rejoinResponse = await joinRoomCallable({
         roomId,
         playerId,
@@ -533,7 +497,9 @@ export function LobbyPage() {
   }
 
   useEffect(() => {
-    if (roomError) setErrorMessage(t('navigation.createFailed'))
+    if (roomError) {
+      setErrorMessage(t('navigation.createFailed'))
+    }
   }, [t, roomError])
 
   useEffect(() => {
@@ -571,158 +537,20 @@ export function LobbyPage() {
     }
   }, [navigate, playerId, room, roomId])
 
-  const nameError = getPlayerNameErrorMessage(newPlayerName)
-  const [selectedPlayerSlot] = useState<string>('host')
+  const currentPlayer = players.find((p) => p.id === playerId) ?? null
+  const hostPlayer = players.find((p) => p.isHost) ?? null
+  const guestPlayers = players.filter((p) => !p.isHost)
 
-  // 언어 변경 감지
-  const { i18n } = useTranslation()
-
-  // 언어 변경 시 플레이어 이름 업데이트
-  useEffect(() => {
-    try {
-      const nicknameDataMap: Record<string, NicknameData> = JSON.parse(
-        localStorage.getItem('dev_player_nickname_data') || '{}',
-      )
-      const customNames: Record<string, string> = JSON.parse(
-        localStorage.getItem('dev_player_custom_names') || '{}',
-      )
-
-      setMockPlayers((prev) =>
-        prev.map((player) => {
-          if (!player.id) return player
-
-          // 커스텀 이름이 있으면 우선 사용
-          if (customNames[player.id]) {
-            return { ...player, name: customNames[player.id] }
-          }
-
-          // 닉네임 데이터로 현재 언어로 포맷
-          if (nicknameDataMap[player.id]) {
-            return { ...player, name: formatNickname(nicknameDataMap[player.id]) }
-          }
-
-          return player
-        }),
-      )
-    } catch (err) {
-      console.warn('[LobbyPageTest] Failed to update player names on language change:', err)
-    }
-  }, [i18n.language])
-
-  useEffect(() => {
-    if (!isDev) {
-      navigate('/')
-    }
-  }, [isDev, navigate])
-
-  // playerCount가 변경되면 mockPlayers 업데이트 (기존 저장 이름은 localStorage에서 복원)
-  useEffect(() => {
-    const fresh = createMockPlayers(playerId)
-    try {
-      const customNames: Record<string, string> = JSON.parse(
-        localStorage.getItem('dev_player_custom_names') || '{}',
-      )
-      const nicknameDataMap: Record<string, NicknameData> = JSON.parse(
-        localStorage.getItem('dev_player_nickname_data') || '{}',
-      )
-      setMockPlayers(
-        fresh.map((p) => {
-          if (!p.id) return p
-          if (customNames[p.id]) return { ...p, name: customNames[p.id] }
-          if (nicknameDataMap[p.id]) return { ...p, name: formatNickname(nicknameDataMap[p.id]) }
-          return p
-        }),
-      )
-    } catch {
-      setMockPlayers(fresh)
-    }
-  }, [playerCount, playerId])
-
-  // mockPlayers가 변경될 때마다 닉네임 데이터를 localStorage에 저장
-  useEffect(() => {
-    try {
-      const nicknameDataMap: Record<string, NicknameData> = JSON.parse(
-        localStorage.getItem('dev_player_nickname_data') || '{}',
-      )
-
-      // 모든 플레이어의 닉네임 데이터를 저장
-      mockPlayers.forEach((player) => {
-        if (player.id && !nicknameDataMap[player.id]) {
-          // 새로운 플레이어는 닉네임 데이터 생성
-          nicknameDataMap[player.id] = generateNicknameData()
-        }
-      })
-
-      localStorage.setItem('dev_player_nickname_data', JSON.stringify(nicknameDataMap))
-
-      // 실제 참여한 플레이어 ID 목록도 저장 (RacePageTest에서 사용)
-      const playerIds = mockPlayers.map((p) => p.id).filter((id): id is string => !!id)
-      localStorage.setItem('dev_player_ids', JSON.stringify(playerIds))
-    } catch (err) {
-      console.warn('[LobbyPageTest] Failed to save nickname data to localStorage:', err)
-    }
-  }, [mockPlayers, playerId])
-
-  // 테스트 페이지에서 실제 페이지의 navigate를 가로채서 테스트 페이지로 리다이렉트
-  useEffect(() => {
-    if (!isDev) return
-
-    const currentPath = location.pathname
-    const searchParams = new URLSearchParams(location.search)
-    const roomIdParam = searchParams.get('roomId')
-    const playerIdParam = searchParams.get('playerId')
-
-    // /horse-selection로 이동하려고 할 때 /horse-selection로 리다이렉트
-    if (currentPath === '/horse-selection') {
-      const params = new URLSearchParams()
-      if (roomIdParam) params.set('roomId', roomIdParam)
-      if (playerIdParam) params.set('playerId', playerIdParam)
-      navigate(`/horse-selection?${params.toString()}`, { replace: true })
-    }
-  }, [isDev, navigate, location.pathname, location.search])
-
-  // 선택된 슬롯에 따라 현재 플레이어 찾기
-  const displayRoom = room ?? mockRoom
-  const lobbyDataMode = hasRealtimeData ? 'realtime' : 'mock'
-  const isRealtimeLobbyMode = lobbyDataMode === 'realtime'
-  const displayPlayers = isRealtimeLobbyMode ? players : mockPlayers
-  const realtimeCurrentPlayer = players.find((p) => p.id === playerId) ?? null
-  const displayGuestPlayers = displayPlayers.filter((p) => !p.isHost)
-
-  const currentPlayer = isRealtimeLobbyMode
-    ? realtimeCurrentPlayer
-    : selectedPlayerSlot === 'host'
-      ? mockPlayers.find((p) => p.isHost) || null
-      : selectedPlayerSlot.startsWith('player-')
-        ? mockPlayers.find(
-            (p) => !p.isHost && p.id === selectedPlayerSlot.replace('player-', ''),
-          ) || null
-        : null
-
-  const isCurrentUserHost = isRealtimeLobbyMode
-    ? !!realtimeCurrentPlayer?.isHost
-    : selectedPlayerSlot === 'host'
-
-  const isPlayerCurrentUser = (player: Player | undefined, mockSlotValue: string): boolean => {
-    if (isRealtimeLobbyMode) {
-      return !!player && player.id === playerId
-    }
-    return selectedPlayerSlot === mockSlotValue
-  }
-
-  // 호스트 제외 전원이 준비되어야 시작 가능
-  const guestPlayers = displayPlayers.filter((p) => !p.isHost)
+  const displayRoom = room
+  const effectiveMaxPlayers = displayRoom?.maxPlayers ?? 8
+  const isCurrentUserHost = !!currentPlayer?.isHost
   const isAllGuestsReady = guestPlayers.length >= 1 && guestPlayers.every((p) => p.isReady)
 
-  // 초대 URL 생성
   const inviteUrl = roomId ? `${window.location.origin}/lobby?roomId=${roomId}` : ''
 
-  // 준비 상태 토글 (Realtime 우선, 실패 시 Mock fallback)
   const handleToggleReady = async () => {
     if (!currentPlayer || isTogglingReady) return
-
-    const targetPlayerId = currentPlayer.id
-    if (!targetPlayerId) return
+    if (!currentPlayer.id) return
 
     setIsTogglingReady(true)
     setErrorMessage(null)
@@ -732,7 +560,7 @@ export function LobbyPage() {
       await withJoinTokenRetry(async (joinToken) => {
         await setPlayerReadyCallable({
           roomId: activeRoomId,
-          playerId: targetPlayerId,
+          playerId: currentPlayer.id as string,
           sessionToken,
           joinToken,
           isReady: !currentPlayer.isReady,
@@ -745,7 +573,6 @@ export function LobbyPage() {
     }
   }
 
-  // 게임 시작 (Realtime 우선, 실패 시 Mock fallback)
   const handleStart = async () => {
     if (!roomId || !playerId || !sessionToken || !roomJoinToken || isStarting || !isAllGuestsReady)
       return
@@ -758,8 +585,6 @@ export function LobbyPage() {
       await withJoinTokenRetry(async (joinToken) => {
         await startGameCallable({ roomId, playerId, sessionToken, joinToken })
       })
-
-      // room.status 구독으로 전원 페이지 전환을 동기화한다.
     } catch (err) {
       reportLobbyActionError('Failed to start game:', err, 'lobby.startFailed')
       setIsStarting(false)
@@ -853,26 +678,6 @@ export function LobbyPage() {
     return { playerId: editingPlayerId, trimmedName }
   }
 
-  const updateMockPlayerName = (targetPlayerId: string, trimmedName: string) => {
-    setMockPlayers((prev) =>
-      prev.map((player) =>
-        player.id === targetPlayerId ? { ...player, name: trimmedName } : player,
-      ),
-    )
-  }
-
-  const persistMockPlayerCustomName = (targetPlayerId: string, trimmedName: string) => {
-    try {
-      const customNames: Record<string, string> = JSON.parse(
-        localStorage.getItem('dev_player_custom_names') || '{}',
-      )
-      customNames[targetPlayerId] = trimmedName
-      localStorage.setItem('dev_player_custom_names', JSON.stringify(customNames))
-    } catch (err) {
-      console.warn('[LobbyPageTest] Failed to save custom name to localStorage:', err)
-    }
-  }
-
   const saveRealtimePlayerName = async (targetPlayerId: string, trimmedName: string) => {
     const activeRoomId = requireRealtimeRoomActionRoomId()
     const activeSessionToken = requireSessionToken()
@@ -888,11 +693,6 @@ export function LobbyPage() {
     })
   }
 
-  const saveMockPlayerName = (targetPlayerId: string, trimmedName: string) => {
-    updateMockPlayerName(targetPlayerId, trimmedName)
-    persistMockPlayerCustomName(targetPlayerId, trimmedName)
-  }
-
   const closeNameEditDialog = () => {
     setIsNameEditDialogOpen(false)
     setEditingPlayerId(null)
@@ -906,11 +706,7 @@ export function LobbyPage() {
     const { playerId: targetPlayerId, trimmedName } = nameEditInput
 
     try {
-      if (hasRealtimeData && roomId) {
-        await saveRealtimePlayerName(targetPlayerId, trimmedName)
-      } else {
-        saveMockPlayerName(targetPlayerId, trimmedName)
-      }
+      await saveRealtimePlayerName(targetPlayerId, trimmedName)
     } catch (err) {
       reportLobbyActionError('Failed to update player name:', err, 'navigation.createFailed')
       return
@@ -919,14 +715,47 @@ export function LobbyPage() {
     closeNameEditDialog()
   }
 
-  if (!isDev) {
-    return (
-      <div className="flex h-screen w-screen items-center justify-center bg-gray-900">
-        <div className="text-center text-white">
-          <p className="text-xl">이 페이지는 개발 모드에서만 사용할 수 있습니다.</p>
-        </div>
-      </div>
-    )
+  const nameError = getPlayerNameErrorMessage(newPlayerName)
+  const isInteractionLocked = lobbyConnectionState !== 'joined'
+  const canRetryConnection =
+    (lobbyConnectionState === 'reconnecting' || lobbyConnectionState === 'error') &&
+    !isJoiningRoom &&
+    joinAttemptCount < 2
+  const shouldShowConnectionBanner = lobbyConnectionState !== 'joined'
+
+  const connectionBannerClassName =
+    lobbyConnectionState === 'error'
+      ? 'mb-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-400'
+      : 'mb-4 rounded-xl border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm text-sky-200'
+
+  const connectionStatusText = (() => {
+    switch (lobbyConnectionState) {
+      case 'bootstrapping':
+        return '세션을 복구하는 중입니다.'
+      case 'syncing':
+        return '로비 상태를 동기화하는 중입니다.'
+      case 'joining':
+        return '로비에 참가하는 중입니다.'
+      case 'reconnecting':
+        return '연결이 불안정합니다. 재연결을 시도 중입니다.'
+      case 'error':
+        return '로비 연결에 실패했습니다. 재시도를 눌러 복구해 주세요.'
+      case 'left':
+        return '로비를 벗어났습니다.'
+      default:
+        return ''
+    }
+  })()
+
+  const handleReconnectRetry = () => {
+    if (!roomId || isJoiningRoom || joinAttemptCount >= 2) return
+    setJoinAttemptCount(0)
+    setErrorMessage(null)
+    void executeJoinRoomAttempt()
+  }
+
+  if (!roomId) {
+    return null
   }
 
   return (
@@ -946,52 +775,61 @@ export function LobbyPage() {
           </div>
         )}
 
+        {shouldShowConnectionBanner && (
+          <div className={connectionBannerClassName}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                {lobbyConnectionState !== 'error' && <Spinner className="text-current" size={14} />}
+                <p>{connectionStatusText}</p>
+              </div>
+              {canRetryConnection && (
+                <button
+                  type="button"
+                  onClick={handleReconnectRetry}
+                  className="rounded-md border border-current/40 px-2 py-1 text-xs font-semibold transition hover:bg-current/10"
+                >
+                  재시도
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         <ul className="space-y-3">
-          {/* 호스트는 항상 표시 */}
-          {(() => {
-            const host = displayPlayers.find((p) => p.isHost)
-            if (!host) return null
-
-            const isCurrentUser = isPlayerCurrentUser(host, 'host')
-
-            return (
-              <li
-                key="host"
-                className="flex items-center gap-2 sm:gap-3 rounded-2xl bg-surface-muted/80 px-3 sm:px-4 py-3"
-              >
-                <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-lg text-muted-foreground">
-                  1
-                </div>
-                <div className="flex flex-1 min-w-0 items-center gap-1.5 sm:gap-2">
-                  <span className="flex items-center justify-center flex-shrink-0">
-                    <Crown className="h-4 w-4 text-yellow-400" />
-                  </span>
-                  <div className="flex flex-1 min-w-0 items-center gap-2">
-                    <p className="text-sm font-semibold text-foreground truncate">
-                      {host.name || 'Host'}
-                    </p>
-                    {isCurrentUser && (editingPlayerId !== host.id || !isNameEditDialogOpen) && (
+          {hostPlayer && (
+            <li className="flex items-center gap-2 sm:gap-3 rounded-2xl bg-surface-muted/80 px-3 sm:px-4 py-3">
+              <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-white/5 text-lg text-muted-foreground">
+                1
+              </div>
+              <div className="flex flex-1 min-w-0 items-center gap-1.5 sm:gap-2">
+                <span className="flex items-center justify-center flex-shrink-0">
+                  <Crown className="h-4 w-4 text-yellow-400" />
+                </span>
+                <div className="flex flex-1 min-w-0 items-center gap-2">
+                  <p className="text-sm font-semibold text-foreground truncate">
+                    {hostPlayer.name || 'Host'}
+                  </p>
+                  {hostPlayer.id === playerId &&
+                    !isInteractionLocked &&
+                    (editingPlayerId !== hostPlayer.id || !isNameEditDialogOpen) && (
                       <button
                         type="button"
-                        onClick={() => handleOpenNameEdit(host)}
+                        onClick={() => handleOpenNameEdit(hostPlayer)}
                         className="flex-shrink-0 text-muted-foreground transition hover:text-foreground"
                         aria-label={t('lobby.editName', { defaultValue: '이름 수정' })}
                       >
                         <SquarePen className="h-3.5 w-3.5" />
                       </button>
                     )}
-                  </div>
                 </div>
-              </li>
-            )
-          })()}
+              </div>
+            </li>
+          )}
 
-          {/* 일반 플레이어 슬롯 (maxPlayers - 1개) */}
-          {Array.from({ length: effectiveMaxPlayers - 1 }).map((_, idx) => {
-            const player = displayGuestPlayers[idx]
+          {Array.from({ length: Math.max(0, effectiveMaxPlayers - 1) }).map((_, idx) => {
+            const player = guestPlayers[idx]
             const isConnected = player !== undefined
-            const slotPlayerId = player?.id ?? `player-${idx + 1}`
-            const isCurrentUser = isPlayerCurrentUser(player, `player-${slotPlayerId}`)
+            const isCurrentUser = !!player && player.id === playerId
 
             return (
               <li
@@ -1021,6 +859,7 @@ export function LobbyPage() {
                           {player.name || `Player ${idx + 2}`}
                         </p>
                         {isCurrentUser &&
+                          !isInteractionLocked &&
                           !player.isReady &&
                           (editingPlayerId !== player.id || !isNameEditDialogOpen) && (
                             <button
@@ -1034,9 +873,7 @@ export function LobbyPage() {
                           )}
                       </>
                     ) : (
-                      <p className="text-sm font-semibold text-muted-foreground truncate">
-                        {/* 빈칸 */}
-                      </p>
+                      <p className="text-sm font-semibold text-muted-foreground truncate"> </p>
                     )}
                   </div>
                 </div>
@@ -1069,7 +906,6 @@ export function LobbyPage() {
           })}
         </ul>
 
-        {/* 초대 링크 */}
         <div className="mt-6 space-y-3 rounded-2xl border border-dashed border-white/15 bg-white/5 p-4">
           <p className="text-xs uppercase tracking-[0.35em] text-muted-foreground">
             {t('lobby.invite')}
@@ -1094,6 +930,7 @@ export function LobbyPage() {
             <button
               type="button"
               onClick={handleCopy}
+              disabled={isInteractionLocked || !inviteUrl}
               className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-primary-foreground transition hover:bg-primary/80"
               aria-label={t('lobby.copy')}
             >
@@ -1102,13 +939,12 @@ export function LobbyPage() {
           </div>
         </div>
 
-        {/* 준비 버튼 (참가 유저만) */}
         {currentPlayer && !isCurrentUserHost && (
           <div className="mt-6">
             <button
               type="button"
               onClick={handleToggleReady}
-              disabled={isTogglingReady}
+              disabled={isTogglingReady || isInteractionLocked}
               className={`w-full rounded-full px-8 py-3 text-base font-semibold transition ${
                 currentPlayer.isReady
                   ? 'border border-success/40 bg-success/10 text-success hover:bg-success/20'
@@ -1124,13 +960,14 @@ export function LobbyPage() {
           </div>
         )}
 
-        {/* 게임 시작 버튼 (호스트만) */}
         {isCurrentUserHost && (
           <div className="mt-6 flex flex-col gap-2">
             <button
               type="button"
               onClick={handleStart}
-              disabled={!isAllGuestsReady || isStarting || guestPlayers.length < 1}
+              disabled={
+                !isAllGuestsReady || isStarting || guestPlayers.length < 1 || isInteractionLocked
+              }
               className="w-full rounded-full border border-transparent bg-primary px-8 py-3 text-base font-semibold text-primary-foreground shadow-neon transition hover:bg-primary/80 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-muted-foreground"
             >
               {isStarting ? t('lobby.starting') : t('lobby.startGame')}
@@ -1142,7 +979,6 @@ export function LobbyPage() {
         )}
       </div>
 
-      {/* 이름 수정 다이얼로그 */}
       <Dialog open={isNameEditDialogOpen} onOpenChange={setIsNameEditDialogOpen}>
         <DialogContent className="max-w-md w-[90%] rounded-3xl border-none bg-surface [&>button]:hidden">
           <DialogHeader>
@@ -1159,13 +995,10 @@ export function LobbyPage() {
                 value={newPlayerName}
                 onChange={(e) => {
                   const value = e.target.value
-                  // 조합 중이면 필터링하지 않고 그대로 설정
                   if (isComposing) {
                     setNewPlayerName(value)
                     return
                   }
-                  // 조합 완료 후에도 입력은 자유롭게 허용 (검증은 별도로)
-                  // 최대 길이 제한만 적용
                   if (value.length <= NAME_MAX_LENGTH) {
                     setNewPlayerName(value)
                   } else {

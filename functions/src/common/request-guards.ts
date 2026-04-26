@@ -6,6 +6,7 @@ type JoinedRoomRequestParams = {
   playerId: string
   sessionToken: string
   joinToken: string
+  authUid?: string
 }
 
 type JoinedRoomHostRequestParams = JoinedRoomRequestParams & {
@@ -24,7 +25,12 @@ type AugmentSelectionRequestContextParams = JoinedRoomRequestParams & {
 
 type RequestGuardDeps<TRoom extends { status: string; currentSet: number }> = {
   verifyGuestSession: (playerId: string, sessionToken: string) => Promise<void>
-  verifyRoomJoinToken: (roomId: string, playerId: string, joinToken: string) => Promise<void>
+  verifyRoomJoinToken: (
+    roomId: string,
+    playerId: string,
+    joinToken: string,
+    authUid?: string,
+  ) => Promise<void>
   isPlayerInRoom: (roomId: string, playerId: string) => Promise<boolean>
   isHost: (roomId: string, playerId: string) => Promise<boolean>
   getRoom: (roomId: string) => Promise<TRoom>
@@ -42,9 +48,9 @@ export function createRequestGuards<TRoom extends { status: string; currentSet: 
   }
 
   async function assertJoinedRoomPlayerRequest(params: JoinedRoomRequestParams): Promise<void> {
-    const { roomId, playerId, sessionToken, joinToken } = params
+    const { roomId, playerId, sessionToken, joinToken, authUid } = params
     await deps.verifyGuestSession(playerId, sessionToken)
-    await deps.verifyRoomJoinToken(roomId, playerId, joinToken)
+    await deps.verifyRoomJoinToken(roomId, playerId, joinToken, authUid)
     await assertPlayerInRoom(roomId, playerId)
   }
 
@@ -72,6 +78,7 @@ export function createRequestGuards<TRoom extends { status: string; currentSet: 
       playerId: params.playerId,
       sessionToken: params.sessionToken,
       joinToken: params.joinToken,
+      authUid: params.authUid,
       hostErrorMessage: params.hostErrorMessage,
     })
 
@@ -85,9 +92,9 @@ export function createRequestGuards<TRoom extends { status: string; currentSet: 
   async function assertAugmentSelectionRequestContext(
     params: AugmentSelectionRequestContextParams,
   ): Promise<TRoom> {
-    const { roomId, playerId, sessionToken, joinToken, setIndex, statusMessage } = params
+    const { roomId, playerId, sessionToken, joinToken, authUid, setIndex, statusMessage } = params
     await deps.verifyGuestSession(playerId, sessionToken)
-    await deps.verifyRoomJoinToken(roomId, playerId, joinToken)
+    await deps.verifyRoomJoinToken(roomId, playerId, joinToken, authUid)
     await assertPlayerInRoom(roomId, playerId)
 
     const room = await deps.getRoom(roomId)

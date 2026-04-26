@@ -1,7 +1,9 @@
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https'
+import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { FieldValue, Timestamp } from 'firebase-admin/firestore'
 import { z } from 'zod'
 import type { Player, RoomStatus } from '../types'
+import { CALLABLE_OPTIONS } from '../common/cors-options'
 
 type LoggerLike = {
   info: (message: string, context?: Record<string, unknown>) => void
@@ -21,9 +23,11 @@ type RoomLifecycleDeps = {
   isValidPlayerName: (name: string) => boolean
   createGuestId: () => string
   createSessionToken: () => string
+  hashSessionToken: (sessionToken: string) => string
   issueRoomJoinToken: (
     roomId: string,
     playerId: string,
+    authUid: string,
   ) => Promise<{ joinToken: string; expiresAtMillis: number }>
   verifyGuestSession: (playerId: string, sessionToken: string) => Promise<void>
   getRoom: (roomId: string) => Promise<{
@@ -31,20 +35,19 @@ type RoomLifecycleDeps = {
     currentSet: number
     roundCount: number
   }>
-  isPlayerInRoom: (roomId: string, playerId: string) => Promise<boolean>
-  isRoomFull: (roomId: string) => Promise<boolean>
-  areAllPlayersReady: (roomId: string) => Promise<boolean>
   assertJoinedRoomPlayerRequest: (params: {
     roomId: string
     playerId: string
     sessionToken: string
     joinToken: string
+    authUid?: string
   }) => Promise<void>
   assertHostWaitingRoomActionRequest: (params: {
     roomId: string
     playerId: string
     sessionToken: string
     joinToken: string
+    authUid?: string
     hostErrorMessage: string
     waitingStatusMessage: string
   }) => Promise<{
@@ -52,6 +55,8 @@ type RoomLifecycleDeps = {
     currentSet: number
     roundCount: number
   }>
+  leaveGracePeriodMs?: number
+  pendingLeaveCleanupBatchSize?: number
 }
 
 const createRoomSchema = z.object({
@@ -60,7 +65,7 @@ const createRoomSchema = z.object({
   hostName: z.string().min(1, 'hostName is required').max(20, 'hostName is too long'),
   title: z.string().min(1).max(48),
   maxPlayers: z.number().int().min(2).max(8),
-  roundCount: z.number().int().min(1).max(9),
+  roundCount: z.number().int().min(1).max(3),
   rerollLimit: z.number().int().min(0).max(5),
 })
 
@@ -99,7 +104,7 @@ const updateRoomSettingsSchema = z.object({
   playerId: z.string().min(1, 'playerId is required'),
   sessionToken: z.string().min(1, 'sessionToken is required'),
   joinToken: z.string().min(1, 'joinToken is required'),
-  roundCount: z.number().int().min(1).max(9).optional(),
+  roundCount: z.number().int().min(1).max(3).optional(),
   rerollLimit: z.number().int().min(0).max(5).optional(),
 })
 
@@ -111,9 +116,13 @@ const startGameSchema = z.object({
 })
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
-const CALLABLE_OPTIONS = { region: 'asia-northeast3', cors: true } as const
+const DEFAULT_MAX_PLAYERS = 8
 const STATUS_WAITING: RoomStatus = 'waiting'
 const STATUS_HORSE_SELECTION: RoomStatus = 'horseSelection'
+const AUTH_STATUS_ACTIVE = 'active'
+const AUTH_STATUS_PENDING_LEAVE = 'pending_leave'
+const DEFAULT_LEAVE_GRACE_PERIOD_MS = 90 * 1000
+const DEFAULT_PENDING_LEAVE_CLEANUP_BATCH_SIZE = 200
 
 export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
   function parseOrThrow<T extends z.ZodTypeAny>(
@@ -140,6 +149,14 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
     throw new HttpsError('internal', publicMessage)
   }
 
+  function requireAuthUid(request: { auth?: { uid?: string } | null }): string {
+    const authUid = request.auth?.uid
+    if (!authUid) {
+      throw new HttpsError('unauthenticated', 'Authentication required')
+    }
+    return authUid
+  }
+
   function decodeUnloadBody(body: unknown, rawBody: Buffer): unknown {
     if (typeof body === 'string') {
       return JSON.parse(body)
@@ -154,87 +171,389 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
     return body
   }
 
+  function mapUnloadErrorToResponse(error: unknown): {
+    status: number
+    body: { ok: false; error: string; retryable: boolean }
+    logLevel: 'warn' | 'error'
+    logEvent: string
+  } {
+    if (error instanceof SyntaxError) {
+      return {
+        status: 400,
+        body: { ok: false, error: 'invalid-json', retryable: false },
+        logLevel: 'warn',
+        logEvent: 'leaveRoomOnUnload.invalidJson',
+      }
+    }
+
+    if (error instanceof HttpsError) {
+      const nonRetryableCodes = new Set([
+        'invalid-argument',
+        'unauthenticated',
+        'permission-denied',
+        'not-found',
+        'failed-precondition',
+        'already-exists',
+        'resource-exhausted',
+      ])
+      const retryable = !nonRetryableCodes.has(error.code)
+      return {
+        // unload 요청은 대부분 브라우저 종료 직전에 발생하므로 기능 오류는 200으로 수렴시켜
+        // 기존 클라이언트 동작을 유지하되, 본문에 명시적 error code를 넣어 운영 추적성을 높인다.
+        status: 200,
+        body: { ok: false, error: error.code, retryable },
+        logLevel: retryable ? 'error' : 'warn',
+        logEvent: `leaveRoomOnUnload.httpsError.${error.code}`,
+      }
+    }
+
+    return {
+      status: 500,
+      body: { ok: false, error: 'internal', retryable: true },
+      logLevel: 'error',
+      logEvent: 'leaveRoomOnUnload.internal',
+    }
+  }
+
+  async function markPendingLeaveOnUnload(params: {
+    roomId: string
+    playerId: string
+    sessionToken: string
+    joinToken: string
+    authUid?: string
+  }): Promise<void> {
+    const { roomId, playerId, sessionToken, joinToken, authUid } = params
+    await deps.getRoom(roomId)
+    await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken, authUid })
+
+    const roomRef = deps.db.collection('rooms').doc(roomId)
+    const playerRef = roomRef.collection('players').doc(playerId)
+    const participantAuthRef = roomRef.collection('participantAuth').doc(playerId)
+    const gracePeriodMs = Math.max(5_000, deps.leaveGracePeriodMs ?? DEFAULT_LEAVE_GRACE_PERIOD_MS)
+
+    const markResult = await deps.db.runTransaction(async (tx) => {
+      const [roomDoc, playerDoc, authDoc] = await Promise.all([
+        tx.get(roomRef),
+        tx.get(playerRef),
+        tx.get(participantAuthRef),
+      ])
+
+      if (!roomDoc.exists || !playerDoc.exists || !authDoc.exists) {
+        return { marked: false as const, reason: 'already-removed' as const }
+      }
+
+      const room = roomDoc.data() as { status?: RoomStatus }
+      if (room.status !== STATUS_WAITING) {
+        return { marked: false as const, reason: 'room-not-waiting' as const, status: room.status }
+      }
+
+      const now = Timestamp.now()
+      const leaveGraceExpiresAt = Timestamp.fromMillis(now.toMillis() + gracePeriodMs)
+      tx.update(participantAuthRef, {
+        status: AUTH_STATUS_PENDING_LEAVE,
+        leaveRequestedAt: now,
+        leaveGraceExpiresAt,
+        updatedAt: now,
+      })
+
+      return { marked: true as const, leaveGraceExpiresAtMillis: leaveGraceExpiresAt.toMillis() }
+    })
+
+    if (!markResult.marked) {
+      deps.logInfo('room.leave.pending.skip', { roomId, playerId, reason: markResult.reason })
+      return
+    }
+
+    deps.logInfo('room.leave.pending.marked', {
+      roomId,
+      playerId,
+      leaveGraceExpiresAtMillis: markResult.leaveGraceExpiresAtMillis,
+    })
+  }
+
   async function executeLeaveRoom(params: {
     roomId: string
     playerId: string
     sessionToken: string
     joinToken: string
+    authUid?: string
   }): Promise<void> {
-    const { roomId, playerId, sessionToken, joinToken } = params
+    const { roomId, playerId, sessionToken, joinToken, authUid } = params
     await deps.getRoom(roomId)
-    await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken })
+    await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken, authUid })
+    const roomRef = deps.db.collection('rooms').doc(roomId)
+    const playersRef = roomRef.collection('players')
+    const playerRef = playersRef.doc(playerId)
+    const participantAuthRef = roomRef.collection('participantAuth').doc(playerId)
 
-    const playerRef = deps.db.collection('rooms').doc(roomId).collection('players').doc(playerId)
-    const playerDoc = await playerRef.get()
-    if (!playerDoc.exists) throw new HttpsError('not-found', 'Player not found in room')
+    const leaveResult = await deps.db.runTransaction(async (tx) => {
+      const [roomDoc, playerDoc, playersSnapshot] = await Promise.all([
+        tx.get(roomRef),
+        tx.get(playerRef),
+        tx.get(playersRef.orderBy('joinedAt', 'asc')),
+      ])
 
-    const player = playerDoc.data() as { isHost: boolean }
-    await playerRef.delete()
-    await deps.db.collection('rooms').doc(roomId).collection('participantAuth').doc(playerId).delete()
+      if (!roomDoc.exists) {
+        throw new HttpsError('not-found', `Room ${roomId} not found`)
+      }
+      if (!playerDoc.exists) {
+        throw new HttpsError('not-found', 'Player not found in room')
+      }
 
-    const remainingPlayersRef = deps.db.collection('rooms').doc(roomId).collection('players')
-    const remainingPlayers = await remainingPlayersRef.get()
+      const now = Timestamp.now()
+      const player = playerDoc.data() as { isHost?: boolean }
+      const wasHost = player.isHost === true
+      const remainingPlayerDocs = playersSnapshot.docs.filter((doc) => doc.id !== playerId)
+      const remainingPlayers = remainingPlayerDocs.length
 
-    if (player.isHost) {
-      if (remainingPlayers.size === 0) {
-        await deps.db.collection('rooms').doc(roomId).delete()
+      tx.delete(playerRef)
+      tx.delete(participantAuthRef)
+
+      if (remainingPlayers === 0) {
+        tx.delete(roomRef)
+        return {
+          wasHost,
+          remainingPlayers,
+          roomDeleted: true as const,
+          deleteReason: wasHost ? ('emptyAfterHostLeave' as const) : ('lastPlayerLeft' as const),
+        }
+      }
+
+      if (wasHost) {
+        const newHostDoc = remainingPlayerDocs[0]
+        const newHostId = newHostDoc?.id
+        if (!newHostId) {
+          throw new HttpsError('internal', 'Failed to resolve new host')
+        }
+        const newHostAuthUid = (newHostDoc.data() as { authUid?: string }).authUid
+        if (!newHostAuthUid) {
+          throw new HttpsError('internal', 'Failed to resolve new host auth identity')
+        }
+
+        tx.update(newHostDoc.ref, { isHost: true, updatedAt: now })
+        tx.update(roomRef, { hostId: newHostId, hostAuthUid: newHostAuthUid, updatedAt: now })
+        return {
+          wasHost,
+          remainingPlayers,
+          roomDeleted: false as const,
+          newHostId,
+        }
+      }
+
+      return {
+        wasHost,
+        remainingPlayers,
+        roomDeleted: false as const,
+      }
+    })
+
+    if (leaveResult.roomDeleted) {
+      if (leaveResult.deleteReason === 'emptyAfterHostLeave') {
         deps.logInfo('room.delete.emptyAfterHostLeave', { roomId })
       } else {
-        const earliestJoinedSnapshot = await remainingPlayersRef.orderBy('joinedAt', 'asc').limit(1).get()
-        const newHostId = earliestJoinedSnapshot.docs[0]?.id
-        if (!newHostId) throw new HttpsError('internal', 'Failed to resolve new host')
-
-        await deps.db.collection('rooms').doc(roomId).collection('players').doc(newHostId).update({
-          isHost: true,
-        })
-        await deps.db.collection('rooms').doc(roomId).update({
-          hostId: newHostId,
-          updatedAt: Timestamp.now(),
-        })
-        deps.logInfo('room.host.transferred', { roomId, newHostId, reason: 'host-left' })
+        deps.logInfo('room.delete.lastPlayerLeft', { roomId })
       }
-    }
-
-    if (!player.isHost && remainingPlayers.size === 0) {
-      await deps.db.collection('rooms').doc(roomId).delete()
-      deps.logInfo('room.delete.lastPlayerLeft', { roomId })
+    } else if (leaveResult.wasHost && leaveResult.newHostId) {
+      deps.logInfo('room.host.transferred', { roomId, newHostId: leaveResult.newHostId, reason: 'host-left' })
     }
 
     deps.logInfo('room.leave.success', {
       roomId,
       playerId,
-      wasHost: player.isHost,
-      remainingPlayers: remainingPlayers.size,
+      wasHost: leaveResult.wasHost,
+      remainingPlayers: leaveResult.remainingPlayers,
     })
+  }
+
+  async function executePendingLeaveCleanupBatch(): Promise<{ processed: number; finalized: number }> {
+    const now = Timestamp.now()
+    const pendingSnapshot = await deps.db
+      .collectionGroup('participantAuth')
+      .where('leaveGraceExpiresAt', '<=', now)
+      .limit(Math.max(1, deps.pendingLeaveCleanupBatchSize ?? DEFAULT_PENDING_LEAVE_CLEANUP_BATCH_SIZE))
+      .get()
+
+    if (pendingSnapshot.empty) {
+      return { processed: 0, finalized: 0 }
+    }
+
+    let finalized = 0
+    await Promise.all(
+      pendingSnapshot.docs.map(async (authDoc) => {
+        const authRef = authDoc.ref
+        const playerId = authRef.id
+        const roomRef = authRef.parent.parent
+        const roomId = roomRef?.id
+        if (!roomRef || !roomId) {
+          await authRef.delete()
+          return
+        }
+
+        try {
+          const cleanupResult = await deps.db.runTransaction(async (tx) => {
+            const playerRef = roomRef.collection('players').doc(playerId)
+            const playersRef = roomRef.collection('players')
+
+            const [roomDoc, playerDoc, authDocInTx, playersSnapshot] = await Promise.all([
+              tx.get(roomRef),
+              tx.get(playerRef),
+              tx.get(authRef),
+              tx.get(playersRef.orderBy('joinedAt', 'asc')),
+            ])
+
+            if (!authDocInTx.exists) {
+              return { finalized: false as const, reason: 'auth-not-found' as const }
+            }
+
+            const authData = authDocInTx.data() as {
+              status?: string
+              leaveGraceExpiresAt?: FirebaseFirestore.Timestamp
+            }
+            if (authData.status !== AUTH_STATUS_PENDING_LEAVE) {
+              return { finalized: false as const, reason: 'status-not-pending' as const }
+            }
+            if (!authData.leaveGraceExpiresAt || authData.leaveGraceExpiresAt.toMillis() > now.toMillis()) {
+              return { finalized: false as const, reason: 'grace-not-expired' as const }
+            }
+
+            if (!roomDoc.exists) {
+              tx.delete(authRef)
+              return { finalized: false as const, reason: 'room-not-found' as const }
+            }
+
+            const room = roomDoc.data() as { status?: RoomStatus }
+            if (room.status !== STATUS_WAITING) {
+              tx.update(authRef, {
+                status: AUTH_STATUS_ACTIVE,
+                leaveRequestedAt: FieldValue.delete(),
+                leaveGraceExpiresAt: FieldValue.delete(),
+                updatedAt: now,
+              })
+              return { finalized: false as const, reason: 'room-not-waiting' as const, roomStatus: room.status }
+            }
+
+            if (!playerDoc.exists) {
+              tx.delete(authRef)
+              return { finalized: false as const, reason: 'player-not-found' as const }
+            }
+
+            const player = playerDoc.data() as { isHost?: boolean }
+            const wasHost = player.isHost === true
+            const remainingPlayerDocs = playersSnapshot.docs.filter((doc) => doc.id !== playerId)
+            const remainingPlayers = remainingPlayerDocs.length
+            tx.delete(playerRef)
+            tx.delete(authRef)
+
+            if (remainingPlayers === 0) {
+              tx.delete(roomRef)
+              return {
+                finalized: true as const,
+                wasHost,
+                remainingPlayers,
+                roomDeleted: true as const,
+                deleteReason: wasHost
+                  ? ('emptyAfterHostLeave' as const)
+                  : ('lastPlayerLeft' as const),
+              }
+            }
+
+            if (wasHost) {
+              const newHostDoc = remainingPlayerDocs[0]
+              const newHostId = newHostDoc?.id
+              if (!newHostId) {
+                throw new HttpsError('internal', 'Failed to resolve new host')
+              }
+              const newHostAuthUid = (newHostDoc.data() as { authUid?: string }).authUid
+              if (!newHostAuthUid) {
+                throw new HttpsError('internal', 'Failed to resolve new host auth identity')
+              }
+              tx.update(newHostDoc.ref, { isHost: true, updatedAt: now })
+              tx.update(roomRef, { hostId: newHostId, hostAuthUid: newHostAuthUid, updatedAt: now })
+              return {
+                finalized: true as const,
+                wasHost,
+                remainingPlayers,
+                roomDeleted: false as const,
+                newHostId,
+              }
+            }
+
+            tx.update(roomRef, { updatedAt: now })
+            return {
+              finalized: true as const,
+              wasHost,
+              remainingPlayers,
+              roomDeleted: false as const,
+            }
+          })
+
+          if (!cleanupResult.finalized) {
+            deps.logInfo('room.leave.pending.cleanup.skip', { roomId, playerId, reason: cleanupResult.reason })
+            return
+          }
+
+          finalized += 1
+          if (cleanupResult.roomDeleted) {
+            if (cleanupResult.deleteReason === 'emptyAfterHostLeave') {
+              deps.logInfo('room.delete.emptyAfterHostLeave', { roomId, source: 'pending-leave-cleanup' })
+            } else {
+              deps.logInfo('room.delete.lastPlayerLeft', { roomId, source: 'pending-leave-cleanup' })
+            }
+          } else if (cleanupResult.wasHost && cleanupResult.newHostId) {
+            deps.logInfo('room.host.transferred', {
+              roomId,
+              newHostId: cleanupResult.newHostId,
+              reason: 'pending-host-leave-expired',
+            })
+          }
+
+          deps.logInfo('room.leave.pending.finalized', {
+            roomId,
+            playerId,
+            wasHost: cleanupResult.wasHost,
+            remainingPlayers: cleanupResult.remainingPlayers,
+          })
+        } catch (error) {
+          deps.logger.error('cleanupPendingLeaves item error', {
+            roomId,
+            playerId,
+            error,
+          })
+        }
+      }),
+    )
+
+    return { processed: pendingSnapshot.size, finalized }
   }
 
   const createGuestSession = onCall(
     CALLABLE_OPTIONS,
     async (request) => {
       try {
-        const requestedGuestIdRaw =
-          request.data && typeof request.data === 'object'
-            ? (request.data as { guestId?: unknown }).guestId
-            : undefined
-        const requestedGuestId =
-          typeof requestedGuestIdRaw === 'string' && requestedGuestIdRaw.trim().length > 0
-            ? requestedGuestIdRaw.trim()
-            : undefined
+        const authUid = requireAuthUid(request)
+        const hasClientProvidedGuestId =
+          request.data !== null &&
+          typeof request.data === 'object' &&
+          Object.prototype.hasOwnProperty.call(request.data, 'guestId')
+        if (hasClientProvidedGuestId) {
+          deps.logWarn('session.guest.clientGuestIdIgnored', { providedField: 'guestId' })
+        }
 
-        const guestId = requestedGuestId || deps.createGuestId()
+        const guestId = authUid
         const sessionToken = deps.createSessionToken()
+        const sessionTokenHash = deps.hashSessionToken(sessionToken)
         const now = Timestamp.now()
         const expiresAt = Timestamp.fromMillis(now.toMillis() + deps.guestSessionTtlDays * MS_PER_DAY)
 
         await deps.db.collection('guestSessions').doc(guestId).set({
-          sessionToken,
+          sessionTokenHash,
           createdAt: now,
           lastSeenAt: now,
           expiresAt,
         })
 
-        deps.logInfo('session.guest.created', { guestId, requestedGuestId: !!requestedGuestId })
-        return { guestId, sessionToken, expiresAtMillis: expiresAt.toMillis() }
+        deps.logInfo('session.guest.created', { guestId })
+        return { authUid, guestId, sessionToken, expiresAtMillis: expiresAt.toMillis() }
       } catch (error) {
         deps.logger.error('createGuestSession error', error)
         rethrowUnexpected(error, 'Failed to create guest session')
@@ -246,11 +565,15 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const parsed = parseOrThrow(createRoomSchema, request.data, {
           warnMessage: 'Invalid createRoom payload',
         })
         const { playerId, sessionToken, hostName, title, maxPlayers, roundCount, rerollLimit } =
           parsed
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         const normalizedHostName = deps.normalizePlayerName(hostName)
         if (!deps.isValidPlayerName(normalizedHostName)) {
           throw new HttpsError('invalid-argument', 'Invalid host name')
@@ -267,6 +590,7 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
           rerollLimit,
           rerollUsed: 0,
           hostId: playerId,
+          hostAuthUid: authUid,
           status: STATUS_WAITING,
           currentSet: 1,
           createdAt: now,
@@ -276,12 +600,13 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
         await roomRef.collection('players').doc(playerId).set({
           name: normalizedHostName,
           isHost: true,
+          authUid,
           isReady: false,
           selectedAugments: [],
           joinedAt: now,
         })
 
-        const issued = await deps.issueRoomJoinToken(roomRef.id, playerId)
+        const issued = await deps.issueRoomJoinToken(roomRef.id, playerId, authUid)
         deps.logInfo('room.create.success', {
           roomId: roomRef.id,
           hostPlayerId: playerId,
@@ -305,18 +630,80 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
   const joinRoom = onCall(
     CALLABLE_OPTIONS,
     async (request) => {
+      let roomIdForLog: string | undefined
+      let playerIdForLog: string | undefined
       try {
+        const authUid = requireAuthUid(request)
         const parsed = parseOrThrow(joinRoomSchema, request.data)
         const { roomId, playerId, sessionToken, playerName } = parsed
+        roomIdForLog = roomId
+        playerIdForLog = playerId
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         const normalizedPlayerName = deps.normalizePlayerName(playerName)
         if (!deps.isValidPlayerName(normalizedPlayerName)) {
           throw new HttpsError('invalid-argument', 'Invalid player name')
         }
         await deps.verifyGuestSession(playerId, sessionToken)
 
-        const room = await deps.getRoom(roomId)
-        if (await deps.isPlayerInRoom(roomId, playerId)) {
-          const issued = await deps.issueRoomJoinToken(roomId, playerId)
+        const joinResult = await deps.db.runTransaction(async (tx) => {
+          const roomRef = deps.db.collection('rooms').doc(roomId)
+          const roomDoc = await tx.get(roomRef)
+          if (!roomDoc.exists) {
+            throw new HttpsError('not-found', `Room ${roomId} not found`)
+          }
+
+          const room = roomDoc.data() as { status?: RoomStatus; maxPlayers?: number }
+          const playerRef = roomRef.collection('players').doc(playerId)
+          const playerDoc = await tx.get(playerRef)
+          if (playerDoc.exists) {
+            const existingPlayer = playerDoc.data() as { authUid?: string }
+            if (existingPlayer.authUid && existingPlayer.authUid !== authUid) {
+              throw new HttpsError('permission-denied', 'Player identity mismatch')
+            }
+            if (!existingPlayer.authUid) {
+              tx.update(playerRef, { authUid, updatedAt: Timestamp.now() })
+            }
+            return { rejoined: true as const, roomStatus: room.status ?? STATUS_WAITING }
+          }
+
+          if (room.status !== STATUS_WAITING) {
+            throw new HttpsError('failed-precondition', 'Room is not accepting new players', {
+              roomStatus: room.status ?? 'unknown',
+            })
+          }
+
+          const playersSnapshot = await tx.get(roomRef.collection('players'))
+          const maxPlayers =
+            typeof room.maxPlayers === 'number' ? room.maxPlayers : DEFAULT_MAX_PLAYERS
+          if (playersSnapshot.size >= maxPlayers) {
+            throw new HttpsError('resource-exhausted', 'Room is full', {
+              maxPlayers,
+              currentPlayers: playersSnapshot.size,
+            })
+          }
+
+          tx.set(playerRef, {
+            name: normalizedPlayerName,
+            isHost: false,
+            authUid,
+            isReady: false,
+            selectedAugments: [],
+            joinedAt: Timestamp.now(),
+          })
+          tx.update(roomRef, { updatedAt: Timestamp.now() })
+
+          return {
+            rejoined: false as const,
+            roomStatus: room.status ?? STATUS_WAITING,
+            maxPlayers,
+            currentPlayers: playersSnapshot.size + 1,
+          }
+        })
+
+        if (joinResult.rejoined) {
+          const issued = await deps.issueRoomJoinToken(roomId, playerId, authUid)
           deps.logInfo('room.join.rejoin', { roomId, playerId })
           return {
             success: true,
@@ -327,27 +714,13 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
           }
         }
 
-        if (await deps.isRoomFull(roomId)) {
-          deps.logWarn('room.join.denied.full', { roomId, playerId })
-          throw new HttpsError('resource-exhausted', 'Room is full')
-        }
-
-        if (room.status !== STATUS_WAITING) {
-          deps.logWarn('room.join.denied.status', { roomId, playerId, status: room.status })
-          throw new HttpsError('failed-precondition', 'Room is not accepting new players')
-        }
-
-        const playerRef = deps.db.collection('rooms').doc(roomId).collection('players').doc(playerId)
-        await playerRef.set({
-          name: normalizedPlayerName,
-          isHost: false,
-          isReady: false,
-          selectedAugments: [],
-          joinedAt: Timestamp.now(),
+        const issued = await deps.issueRoomJoinToken(roomId, playerId, authUid)
+        deps.logInfo('room.join.success', {
+          roomId,
+          playerId,
+          currentPlayers: joinResult.currentPlayers,
+          maxPlayers: joinResult.maxPlayers,
         })
-
-        const issued = await deps.issueRoomJoinToken(roomId, playerId)
-        deps.logInfo('room.join.success', { roomId, playerId })
         return {
           success: true,
           playerId,
@@ -356,6 +729,17 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
           rejoined: false,
         }
       } catch (error) {
+        if (error instanceof HttpsError) {
+          if (error.code === 'resource-exhausted') {
+            deps.logWarn('room.join.denied.full', { roomId: roomIdForLog, playerId: playerIdForLog })
+          } else if (error.code === 'failed-precondition') {
+            deps.logWarn('room.join.denied.status', {
+              roomId: roomIdForLog,
+              playerId: playerIdForLog,
+              status: (error.details as { roomStatus?: string } | undefined)?.roomStatus,
+            })
+          }
+        }
         deps.logger.error('joinRoom error', error)
         rethrowUnexpected(error, 'Failed to join room')
       }
@@ -366,14 +750,18 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const parsed = parseOrThrow(updatePlayerNameSchema, request.data)
         const { roomId, playerId, sessionToken, joinToken, name } = parsed
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         const normalizedName = deps.normalizePlayerName(name)
         if (!deps.isValidPlayerName(normalizedName)) {
           throw new HttpsError('invalid-argument', 'Invalid player name')
         }
 
-        await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken })
+        await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken, authUid })
         await deps.db.collection('rooms').doc(roomId).collection('players').doc(playerId).update({
           name: normalizedName,
         })
@@ -390,10 +778,14 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const parsed = parseOrThrow(setPlayerReadySchema, request.data)
         const { roomId, playerId, sessionToken, joinToken, isReady } = parsed
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         const room = await deps.getRoom(roomId)
-        await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken })
+        await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken, authUid })
 
         if (room.status !== STATUS_WAITING) {
           throw new HttpsError('failed-precondition', 'Ready status can only be changed before game starts')
@@ -414,8 +806,12 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const parsed = parseOrThrow(leaveRoomSchema, request.data)
-        await executeLeaveRoom(parsed)
+        if (parsed.playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
+        await executeLeaveRoom({ ...parsed, authUid })
         return { success: true }
       } catch (error) {
         deps.logger.error('leaveRoom error', error)
@@ -437,12 +833,29 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
         const payload =
           body && typeof body === 'object' ? ((body as { data?: unknown }).data ?? body) : undefined
         const parsed = parseOrThrow(leaveRoomSchema, payload)
-        await executeLeaveRoom(parsed)
+        await markPendingLeaveOnUnload(parsed)
         res.status(204).send()
       } catch (error) {
-        deps.logger.warn('leaveRoomOnUnload error', error)
-        res.status(200).json({ ok: false })
+        const mapped = mapUnloadErrorToResponse(error)
+        if (mapped.logLevel === 'warn') {
+          deps.logger.warn(mapped.logEvent, error)
+        } else {
+          deps.logger.error(mapped.logEvent, error)
+        }
+        res.status(mapped.status).json(mapped.body)
       }
+    },
+  )
+
+  const cleanupPendingLeaves = onSchedule(
+    {
+      region: 'asia-northeast3',
+      schedule: 'every 2 minutes',
+      timeZone: 'UTC',
+    },
+    async () => {
+      const result = await executePendingLeaveCleanupBatch()
+      deps.logInfo('room.leave.pending.cleanup.completed', result)
     },
   )
 
@@ -450,13 +863,18 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const parsed = parseOrThrow(updateRoomSettingsSchema, request.data)
         const { roomId, playerId, sessionToken, joinToken, roundCount, rerollLimit } = parsed
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         await deps.assertHostWaitingRoomActionRequest({
           roomId,
           playerId,
           sessionToken,
           joinToken,
+          authUid,
           hostErrorMessage: 'Only host can update room settings',
           waitingStatusMessage: 'Room settings can only be changed before game starts',
         })
@@ -481,54 +899,83 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const parsed = parseOrThrow(startGameSchema, request.data)
         const { roomId, playerId, sessionToken, joinToken } = parsed
-        await deps.assertHostWaitingRoomActionRequest({
-          roomId,
-          playerId,
-          sessionToken,
-          joinToken,
-          hostErrorMessage: 'Only host can start the game',
-          waitingStatusMessage: 'Game can only be started when room is in waiting status',
-        })
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
+        // Preserve previous contract: missing room surfaces as not-found before auth checks.
+        await deps.getRoom(roomId)
+        await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken, authUid })
 
         const roomRef = deps.db.collection('rooms').doc(roomId)
-        const playersSnapshot = await roomRef.collection('players').get()
-        const playerCount = playersSnapshot.size
-        if (playerCount < 2) {
-          throw new HttpsError('failed-precondition', 'At least 2 players are required to start the game')
-        }
-        if (!(await deps.areAllPlayersReady(roomId))) {
-          throw new HttpsError('failed-precondition', 'All players must be ready before starting the game')
-        }
+        const startResult = await deps.db.runTransaction(async (tx) => {
+          const now = Timestamp.now()
+          const requesterRef = roomRef.collection('players').doc(playerId)
+          const [roomDoc, requesterDoc, playersSnapshot, setsSnapshot] = await Promise.all([
+            tx.get(roomRef),
+            tx.get(requesterRef),
+            tx.get(roomRef.collection('players')),
+            tx.get(roomRef.collection('sets')),
+          ])
 
-        const resetBatch = deps.db.batch()
-        playersSnapshot.docs.forEach((doc) => {
-          resetBatch.update(doc.ref, {
-            selectedAugments: [],
-            horseStats: FieldValue.delete(),
-            currentSetLuckBonus: 0,
-            rerollUsed: 0,
-            updatedAt: Timestamp.now(),
+          if (!roomDoc.exists) {
+            throw new HttpsError('not-found', `Room ${roomId} not found`)
+          }
+          if (!requesterDoc.exists || (requesterDoc.data() as { isHost?: boolean }).isHost !== true) {
+            throw new HttpsError('permission-denied', 'Only host can start the game')
+          }
+
+          const room = roomDoc.data() as { status?: RoomStatus }
+          if (room.status !== STATUS_WAITING) {
+            throw new HttpsError('failed-precondition', 'Game can only be started when room is in waiting status')
+          }
+
+          const playerDocs = playersSnapshot.docs
+          const playerCount = playerDocs.length
+          if (playerCount < 2) {
+            throw new HttpsError('failed-precondition', 'At least 2 players are required to start the game')
+          }
+
+          const guestPlayers = playerDocs.filter(
+            (doc) => (doc.data() as { isHost?: boolean }).isHost !== true,
+          )
+          const areAllGuestsReady =
+            guestPlayers.length > 0 &&
+            guestPlayers.every((doc) => (doc.data() as { isReady?: boolean }).isReady === true)
+          if (!areAllGuestsReady) {
+            throw new HttpsError('failed-precondition', 'All players must be ready before starting the game')
+          }
+
+          playerDocs.forEach((doc) => {
+            tx.update(doc.ref, {
+              selectedAugments: [],
+              horseStats: FieldValue.delete(),
+              currentSetLuckBonus: 0,
+              rerollUsed: 0,
+              updatedAt: now,
+            })
           })
-        })
-        await resetBatch.commit()
 
-        const setsSnapshot = await roomRef.collection('sets').get()
-        if (!setsSnapshot.empty) {
-          const deleteBatch = deps.db.batch()
-          setsSnapshot.docs.forEach((doc) => deleteBatch.delete(doc.ref))
-          await deleteBatch.commit()
-        }
+          setsSnapshot.docs.forEach((doc) => tx.delete(doc.ref))
 
-        await roomRef.update({
-          status: STATUS_HORSE_SELECTION,
-          currentSet: 1,
-          rerollUsed: 0,
-          updatedAt: Timestamp.now(),
+          tx.update(roomRef, {
+            status: STATUS_HORSE_SELECTION,
+            currentSet: 1,
+            rerollUsed: 0,
+            updatedAt: now,
+          })
+
+          return { playerCount, deletedSetCount: setsSnapshot.size }
         })
 
-        deps.logger.info('Game started', { roomId, playerCount })
+        deps.logger.info('Game started', {
+          roomId,
+          playerCount: startResult.playerCount,
+          deletedSetCount: startResult.deletedSetCount,
+          mode: 'transaction',
+        })
         return { success: true, status: STATUS_HORSE_SELECTION }
       } catch (error) {
         deps.logger.error('startGame error', error)
@@ -545,6 +992,7 @@ export function createRoomLifecycleCallables(deps: RoomLifecycleDeps) {
     setPlayerReady,
     leaveRoom,
     leaveRoomOnUnload,
+    cleanupPendingLeaves,
     updateRoomSettings,
     startGame,
   }

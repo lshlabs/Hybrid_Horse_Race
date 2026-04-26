@@ -2,19 +2,6 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore'
 import { HttpsError } from 'firebase-functions/v2/https'
 import type { Room, Player, RoomStatus } from './types'
 
-const DEFAULT_MAX_PLAYERS = 8
-const STAT_KEYS = ['Speed', 'Stamina', 'Power', 'Guts', 'Start', 'Luck'] as const
-const BASE_STAT_VALUE = 8
-const TOTAL_STAT_POINTS = 80
-const INITIAL_STATS = {
-  Speed: BASE_STAT_VALUE,
-  Stamina: BASE_STAT_VALUE,
-  Power: BASE_STAT_VALUE,
-  Guts: BASE_STAT_VALUE,
-  Start: BASE_STAT_VALUE,
-  Luck: BASE_STAT_VALUE,
-}
-
 function getDb(): FirebaseFirestore.Firestore {
   return getFirestore()
 }
@@ -67,13 +54,6 @@ export async function updateRoomStatus(roomId: string, status: RoomStatus): Prom
   })
 }
 
-export async function getPlayerCount(roomId: string): Promise<number> {
-  const db = getDb()
-  const playersSnapshot = await getPlayersRef(db, roomId).get()
-
-  return playersSnapshot.size
-}
-
 export async function isHost(roomId: string, playerId: string): Promise<boolean> {
   const player = await getPlayer(roomId, playerId)
   return player?.isHost === true
@@ -82,13 +62,6 @@ export async function isHost(roomId: string, playerId: string): Promise<boolean>
 export async function isPlayerInRoom(roomId: string, playerId: string): Promise<boolean> {
   const player = await getPlayer(roomId, playerId)
   return player !== null
-}
-
-export async function isRoomFull(roomId: string): Promise<boolean> {
-  const room = await getRoom(roomId)
-  const playerCount = await getPlayerCount(roomId)
-  const maxPlayers = typeof room.maxPlayers === 'number' ? room.maxPlayers : DEFAULT_MAX_PLAYERS
-  return playerCount >= maxPlayers
 }
 
 export async function areAllPlayersReady(roomId: string): Promise<boolean> {
@@ -100,25 +73,4 @@ export async function areAllPlayersReady(roomId: string): Promise<boolean> {
   }
 
   return guestPlayers.every((player) => player.isReady)
-}
-
-export function generateInitialStats(): {
-  Speed: number
-  Stamina: number
-  Power: number
-  Guts: number
-  Start: number
-  Luck: number
-} {
-  const stats = { ...INITIAL_STATS }
-  let remainingPoints = TOTAL_STAT_POINTS - STAT_KEYS.length * BASE_STAT_VALUE
-
-  while (remainingPoints > 0) {
-    const randomIndex = Math.floor(Math.random() * STAT_KEYS.length)
-    const key = STAT_KEYS[randomIndex]
-    stats[key] += 1
-    remainingPoints -= 1
-  }
-
-  return stats
 }

@@ -1,8 +1,12 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https'
+import { Timestamp } from 'firebase-admin/firestore'
 import { z } from 'zod'
 import type { Augment, Player, Room } from '../types'
+import { CALLABLE_OPTIONS } from '../common/cors-options'
 import type {
   GetRaceStateSetDocData,
+  ServerRaceEvent,
+  ServerRaceKeyframe,
   GetSetResultRaceRanking,
   GetSetResultSetSummary,
 } from '../common/response-builders'
@@ -12,9 +16,11 @@ type AssertJoinedRoomPlayerRequest = (params: {
   playerId: string
   sessionToken: string
   joinToken: string
+  authUid?: string
 }) => Promise<void>
 
 type LoggerLike = {
+  info?: (message: string, context?: Record<string, unknown>) => void
   error: (message: string, error: unknown) => void
 }
 
@@ -34,6 +40,7 @@ type RaceReadDeps = {
     setIndex: number
     setData: GetRaceStateSetDocData | undefined
     nowMillis?: number
+    eventWindowStartElapsedMs?: number
   }) => unknown
   getSortedSetSummaries: (
     snapshot: FirebaseFirestore.QuerySnapshot<FirebaseFirestore.DocumentData>,
@@ -59,12 +66,110 @@ const authenticatedSetRequestSchema = {
   setIndex: z.number().int().min(1),
 }
 
-const getSetResultSchema = z.object(authenticatedSetRequestSchema)
-const getRaceStateSchema = z.object(authenticatedSetRequestSchema)
-const CALLABLE_OPTIONS = { region: 'asia-northeast3', cors: true } as const
+const getRaceStateSchema = z.object({
+  ...authenticatedSetRequestSchema,
+  eventsSinceElapsedMs: z.number().min(0).optional(),
+  includeObservability: z.boolean().optional(),
+})
+const getSetResultWithObservabilitySchema = z.object({
+  ...authenticatedSetRequestSchema,
+  includeObservability: z.boolean().optional(),
+})
+const DEFAULT_RACE_STATE_PAYLOAD_DOC_ID = 'payload'
+const RACE_STATE_PAYLOAD_FORMAT_CHUNKED_V2 = 'chunked-v2'
+const DEFAULT_KEYFRAME_CHUNK_SIZE = 32
+const DEFAULT_EVENT_BUCKET_MS = 1000
+const MIN_OUTPUT_FRAME_MS = 1
+const RACE_STATE_PAYLOAD_CACHE_MAX_ENTRIES = 64
+const RACE_STATE_PAYLOAD_CACHE_TTL_MS = 15_000
+const READ_PERF_LOG_SAMPLE_MOD = 20
+const READ_OBSERVABILITY_EXPOSE_ENV_KEY = 'FUNCTIONS_EXPOSE_READ_OBSERVABILITY'
+const SHOULD_EXPOSE_READ_OBSERVABILITY = process.env[READ_OBSERVABILITY_EXPOSE_ENV_KEY] === 'true'
+let raceStateReadCount = 0
+let setResultReadCount = 0
+
+type CachedRaceStatePayload = {
+  keyframes: ServerRaceKeyframe[]
+  events: ServerRaceEvent[]
+  slowmoTriggerMs?: number
+  cachedAtMs: number
+}
+
+const raceStatePayloadCache = new Map<string, CachedRaceStatePayload>()
+
+function buildRaceStatePayloadCacheKey(params: {
+  roomId: string
+  setIndex: number
+  payloadDocId: string
+  setData: GetRaceStateSetDocData | undefined
+}): string {
+  const updatedAtMillis = params.setData?.raceState?.updatedAt?.toMillis?.() ?? 'na'
+  const keyframeCount = params.setData?.raceState?.keyframeCount ?? 'na'
+  const eventCount = params.setData?.raceState?.eventCount ?? 'na'
+  return `${params.roomId}:${params.setIndex}:${params.payloadDocId}:${updatedAtMillis}:${keyframeCount}:${eventCount}`
+}
+
+function readCachedRaceStatePayload(cacheKey: string, nowMillis: number): CachedRaceStatePayload | null {
+  const cached = raceStatePayloadCache.get(cacheKey)
+  if (!cached) {
+    return null
+  }
+  if (nowMillis - cached.cachedAtMs > RACE_STATE_PAYLOAD_CACHE_TTL_MS) {
+    raceStatePayloadCache.delete(cacheKey)
+    return null
+  }
+  return cached
+}
+
+function writeCachedRaceStatePayload(cacheKey: string, payload: Omit<CachedRaceStatePayload, 'cachedAtMs'>) {
+  if (raceStatePayloadCache.size >= RACE_STATE_PAYLOAD_CACHE_MAX_ENTRIES) {
+    const oldestKey = raceStatePayloadCache.keys().next().value
+    if (oldestKey) {
+      raceStatePayloadCache.delete(oldestKey)
+    }
+  }
+  raceStatePayloadCache.set(cacheKey, {
+    ...payload,
+    cachedAtMs: Date.now(),
+  })
+}
 
 function countReadyForNextPlayers(readyForNext?: Record<string, boolean>): number {
   return Object.keys(readyForNext ?? {}).filter((id) => readyForNext?.[id] === true).length
+}
+
+type SetResultSummaryRanking = {
+  playerId: string
+  name: string
+  position: number
+  time: number
+  selectedAugments: Augment[]
+}
+
+type SetResultSummary = {
+  rankings?: SetResultSummaryRanking[]
+  startedAtMillis?: number | null
+  generatedAt?: FirebaseFirestore.Timestamp
+}
+
+function shouldSampleRead(action: 'getRaceState' | 'getSetResult'): boolean {
+  // High-frequency callable이므로 고정 비율 샘플링으로 로그 비용을 제어한다.
+  if (action === 'getRaceState') {
+    raceStateReadCount += 1
+    return raceStateReadCount % READ_PERF_LOG_SAMPLE_MOD === 0
+  }
+  setResultReadCount += 1
+  return setResultReadCount % READ_PERF_LOG_SAMPLE_MOD === 0
+}
+
+function resolveRaceStateStatus(params: {
+  isPrepared: boolean
+  keyframeIndex: number
+  keyframeCount: number
+}): 'prepared' | 'running' | 'completed' {
+  if (params.isPrepared) return 'prepared'
+  if (params.keyframeIndex >= params.keyframeCount - 1) return 'completed'
+  return 'running'
 }
 
 export function createRaceReadCallables(deps: RaceReadDeps) {
@@ -85,15 +190,171 @@ export function createRaceReadCallables(deps: RaceReadDeps) {
     throw new HttpsError('internal', publicMessage)
   }
 
+  function requireAuthUid(request: { auth?: { uid?: string } | null }): string {
+    const authUid = request.auth?.uid
+    if (!authUid) {
+      throw new HttpsError('unauthenticated', 'Authentication required')
+    }
+    return authUid
+  }
+
+  async function buildChunkedRaceStateResponse(params: {
+    roomId: string
+    setIndex: number
+    setDocRef: FirebaseFirestore.DocumentReference
+    setData: GetRaceStateSetDocData | undefined
+    eventsSinceElapsedMs?: number
+  }) {
+    const raceState = params.setData?.raceState
+    const keyframeCount = raceState?.keyframeCount ?? 0
+    if (!raceState || keyframeCount <= 0) {
+      return {
+        response: { success: true as const, hasRaceState: false as const },
+        metrics: {
+          payloadSource: 'chunked-v2' as const,
+          keyframeChunkReads: 0,
+          eventBucketReads: 0,
+          eventWindowCount: 0,
+        },
+      }
+    }
+
+    const startedAtMillis = raceState.startedAt?.toMillis?.()
+    const nowMillis = Date.now()
+    const isPrepared = !startedAtMillis || raceState.status === 'prepared'
+    const elapsedMs = isPrepared ? 0 : Math.max(0, nowMillis - startedAtMillis)
+    const outputFrameMs = raceState.outputFrameMs ?? raceState.tickIntervalMs ?? 120
+    const simStepMs = raceState.simStepMs ?? 50
+    const safeOutputFrameMs = Math.max(MIN_OUTPUT_FRAME_MS, outputFrameMs)
+    const keyframeIndex = Math.min(
+      keyframeCount - 1,
+      Math.max(0, Math.floor(elapsedMs / safeOutputFrameMs)),
+    )
+    const nextKeyframeIndex = Math.min(keyframeCount - 1, keyframeIndex + 1)
+
+    const keyframeChunkSize = Math.max(1, raceState.keyframeChunkSize ?? DEFAULT_KEYFRAME_CHUNK_SIZE)
+    // 현재/다음 프레임 계산에 필요한 chunk만 읽어서 read fan-out을 제한한다.
+    const requiredChunkIndexes = Array.from(
+      new Set([
+        Math.floor(keyframeIndex / keyframeChunkSize),
+        Math.floor(nextKeyframeIndex / keyframeChunkSize),
+      ]),
+    ).sort((a, b) => a - b)
+    const keyframeChunkRefs = requiredChunkIndexes.map((chunkIndex) =>
+      params.setDocRef.collection('raceStatePayloadKeyframes').doc(`chunk-${chunkIndex}`),
+    )
+    const keyframeChunkSnapshots =
+      keyframeChunkRefs.length > 0 ? await deps.db.getAll(...keyframeChunkRefs) : []
+
+    const keyframeChunkByIndex = new Map<number, ServerRaceKeyframe[]>()
+    keyframeChunkSnapshots.forEach((snapshot) => {
+      const data = snapshot.data() as { chunkIndex?: number; keyframes?: ServerRaceKeyframe[] } | undefined
+      const chunkIndex = data?.chunkIndex
+      if (typeof chunkIndex !== 'number' || !Array.isArray(data?.keyframes)) return
+      keyframeChunkByIndex.set(chunkIndex, data.keyframes)
+    })
+
+    const resolveKeyframeByIndex = (targetIndex: number): ServerRaceKeyframe | undefined => {
+      const chunkIndex = Math.floor(targetIndex / keyframeChunkSize)
+      const chunk = keyframeChunkByIndex.get(chunkIndex)
+      if (!chunk) return undefined
+      const offset = targetIndex - chunkIndex * keyframeChunkSize
+      return chunk[offset]
+    }
+
+    const keyframe = resolveKeyframeByIndex(keyframeIndex)
+    const nextKeyframe = resolveKeyframeByIndex(nextKeyframeIndex)
+    if (!keyframe || !nextKeyframe) {
+      return {
+        response: { success: true as const, hasRaceState: false as const },
+        metrics: {
+          payloadSource: 'chunked-v2' as const,
+          keyframeChunkReads: keyframeChunkRefs.length,
+          eventBucketReads: 0,
+          eventWindowCount: 0,
+        },
+      }
+    }
+
+    const nextElapsed = nextKeyframe.elapsedMs ?? keyframe.elapsedMs
+    const eventBucketMs = Math.max(1, raceState.eventBucketMs ?? DEFAULT_EVENT_BUCKET_MS)
+    const eventWindowStartElapsed = Number.isFinite(params.eventsSinceElapsedMs)
+      ? Math.max(0, Number(params.eventsSinceElapsedMs))
+      : 0
+    // 이벤트 버킷은 윈도우 시작~다음 키프레임 시점까지만 조회한다.
+    const startBucketElapsed = Math.floor(eventWindowStartElapsed / eventBucketMs) * eventBucketMs
+    const endBucketElapsed = Math.floor(nextElapsed / eventBucketMs) * eventBucketMs
+
+    const eventBucketRefs: FirebaseFirestore.DocumentReference[] = []
+    for (let bucketElapsed = startBucketElapsed; bucketElapsed <= endBucketElapsed; bucketElapsed += eventBucketMs) {
+      eventBucketRefs.push(
+        params.setDocRef.collection('raceStatePayloadEvents').doc(`bucket-${bucketElapsed}`),
+      )
+    }
+    const eventBucketSnapshots = eventBucketRefs.length > 0 ? await deps.db.getAll(...eventBucketRefs) : []
+    const eventsWindow = eventBucketSnapshots
+      .flatMap((snapshot) => {
+        const data = snapshot.data() as { events?: ServerRaceEvent[] } | undefined
+        return Array.isArray(data?.events) ? data.events : []
+      })
+      .filter((event) => event.elapsedMs <= nextElapsed && event.elapsedMs > eventWindowStartElapsed)
+      .sort((a, b) => a.elapsedMs - b.elapsedMs)
+
+    const status = resolveRaceStateStatus({
+      isPrepared,
+      keyframeIndex,
+      keyframeCount,
+    })
+
+    return {
+      response: {
+        success: true as const,
+        hasRaceState: true as const,
+        status,
+        setIndex: params.setIndex,
+        scriptVersion: raceState.scriptVersion ?? '',
+        raceStateDocVersion: raceState.raceStateDocVersion ?? '',
+        startedAtMillis: startedAtMillis ?? null,
+        elapsedMs: isPrepared ? 0 : keyframe.elapsedMs,
+        simStepMs,
+        outputFrameMs,
+        tickIntervalMs: outputFrameMs,
+        authoritativeNowMs: nowMillis,
+        trackLengthM: raceState.trackLengthM ?? 0,
+        keyframeIndex,
+        keyframe,
+        nextKeyframe,
+        eventsWindow,
+        slowmoTriggerMs: raceState.slowmoTriggerMs ?? null,
+        snapshotHash: raceState.inputsSnapshotHash ?? '',
+        rankings: params.setData?.raceResult?.rankings ?? [],
+      },
+      metrics: {
+        payloadSource: 'chunked-v2' as const,
+        keyframeChunkReads: keyframeChunkRefs.length,
+        eventBucketReads: eventBucketRefs.length,
+        eventWindowCount: eventsWindow.length,
+      },
+    }
+  }
+
   const getRaceState = onCall(
     CALLABLE_OPTIONS,
     async (request) => {
+      const startedAtMs = Date.now()
       try {
-        const { roomId, playerId, sessionToken, joinToken, setIndex } = parseOrThrow(
+        const authUid = requireAuthUid(request)
+        const { roomId, playerId, sessionToken, joinToken, setIndex, eventsSinceElapsedMs, includeObservability } =
+          parseOrThrow(
           getRaceStateSchema,
           request.data,
         )
-        await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken })
+        // 운영 기본은 비공개, 서버 플래그+요청 플래그가 모두 켜질 때만 응답에 노출한다.
+        const exposeObservability = SHOULD_EXPOSE_READ_OBSERVABILITY && includeObservability === true
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
+        await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken, authUid })
 
         const room = await deps.getRoom(roomId)
         if (room.currentSet !== setIndex) {
@@ -109,11 +370,165 @@ export function createRaceReadCallables(deps: RaceReadDeps) {
         const setDocRef = deps.db.collection('rooms').doc(roomId).collection('sets').doc(`set-${setIndex}`)
         const setDoc = await setDocRef.get()
         if (!setDoc.exists) {
-          return { success: true, hasRaceState: false }
+          const result = { success: true, hasRaceState: false }
+          if (deps.logger.info && shouldSampleRead('getRaceState')) {
+            deps.logger.info('perf.getRaceState', {
+              roomId,
+              playerId,
+              setIndex,
+              durationMs: Date.now() - startedAtMs,
+              hasRaceState: false,
+              payloadSource: 'missing-set-doc',
+            })
+          }
+          return exposeObservability
+            ? {
+                ...result,
+                observability: {
+                  payloadSource: 'missing-set-doc',
+                  keyframeChunkReads: 0,
+                  eventBucketReads: 0,
+                  eventWindowCount: 0,
+                },
+              }
+            : result
         }
 
         const setData = setDoc.data() as GetRaceStateSetDocData | undefined
-        return deps.buildGetRaceStateResponse({ setIndex, setData })
+        const hasInlinePayload = Array.isArray(setData?.raceState?.keyframes)
+        const payloadFormat = setData?.raceState?.payloadFormat
+        const payloadDocId = setData?.raceState?.payloadDocId ?? DEFAULT_RACE_STATE_PAYLOAD_DOC_ID
+
+        if (hasInlinePayload) {
+          const result = deps.buildGetRaceStateResponse({
+            setIndex,
+            setData,
+            eventWindowStartElapsedMs: eventsSinceElapsedMs,
+          })
+          const resultData = result as { hasRaceState?: boolean; eventsWindow?: ServerRaceEvent[] } | undefined
+          if (deps.logger.info && shouldSampleRead('getRaceState')) {
+            deps.logger.info('perf.getRaceState', {
+              roomId,
+              playerId,
+              setIndex,
+              durationMs: Date.now() - startedAtMs,
+              hasRaceState: resultData?.hasRaceState ?? false,
+              payloadSource: 'inline-legacy',
+              eventWindowCount: resultData?.eventsWindow?.length ?? 0,
+            })
+          }
+          return exposeObservability
+            ? {
+                ...(result as Record<string, unknown>),
+                observability: {
+                  payloadSource: 'inline-legacy',
+                  keyframeChunkReads: 0,
+                  eventBucketReads: 0,
+                  eventWindowCount: resultData?.eventsWindow?.length ?? 0,
+                },
+              }
+            : result
+        }
+
+        if (payloadFormat === RACE_STATE_PAYLOAD_FORMAT_CHUNKED_V2) {
+          const chunked = await buildChunkedRaceStateResponse({
+            roomId,
+            setIndex,
+            setDocRef,
+            setData,
+            eventsSinceElapsedMs,
+          })
+          if (deps.logger.info && shouldSampleRead('getRaceState')) {
+            deps.logger.info('perf.getRaceState', {
+              roomId,
+              playerId,
+              setIndex,
+              durationMs: Date.now() - startedAtMs,
+              hasRaceState: chunked.response.hasRaceState,
+              payloadSource: chunked.metrics.payloadSource,
+              keyframeChunkReads: chunked.metrics.keyframeChunkReads,
+              eventBucketReads: chunked.metrics.eventBucketReads,
+              eventWindowCount: chunked.metrics.eventWindowCount,
+            })
+          }
+          return exposeObservability
+            ? {
+                ...(chunked.response as Record<string, unknown>),
+                observability: {
+                  payloadSource: chunked.metrics.payloadSource,
+                  keyframeChunkReads: chunked.metrics.keyframeChunkReads,
+                  eventBucketReads: chunked.metrics.eventBucketReads,
+                  eventWindowCount: chunked.metrics.eventWindowCount,
+                },
+              }
+            : chunked.response
+        }
+
+        const cacheKey = buildRaceStatePayloadCacheKey({ roomId, setIndex, payloadDocId, setData })
+        const nowMillis = Date.now()
+        let payload = readCachedRaceStatePayload(cacheKey, nowMillis)
+        const payloadCacheHit = !!payload
+
+        if (!payload) {
+          const payloadDoc = await setDocRef.collection('raceStatePayload').doc(payloadDocId).get()
+          const payloadData = payloadDoc.data() as
+            | {
+                keyframes?: ServerRaceKeyframe[]
+                events?: ServerRaceEvent[]
+                slowmoTriggerMs?: number
+              }
+            | undefined
+          payload = {
+            keyframes: payloadData?.keyframes ?? [],
+            events: payloadData?.events ?? [],
+            slowmoTriggerMs: payloadData?.slowmoTriggerMs,
+            cachedAtMs: nowMillis,
+          }
+          writeCachedRaceStatePayload(cacheKey, payload)
+        }
+
+        const hydratedSetData: GetRaceStateSetDocData | undefined = setData
+          ? {
+              ...setData,
+              raceState: {
+                ...(setData.raceState ?? {}),
+                keyframes: payload.keyframes,
+                events: payload.events,
+                slowmoTriggerMs: payload.slowmoTriggerMs ?? setData.raceState?.slowmoTriggerMs,
+              },
+            }
+          : undefined
+
+        const result = deps.buildGetRaceStateResponse({
+          setIndex,
+          setData: hydratedSetData,
+          eventWindowStartElapsedMs: eventsSinceElapsedMs,
+        })
+        const resultData = result as { hasRaceState?: boolean; eventsWindow?: ServerRaceEvent[] } | undefined
+        if (deps.logger.info && shouldSampleRead('getRaceState')) {
+          deps.logger.info('perf.getRaceState', {
+            roomId,
+            playerId,
+            setIndex,
+            durationMs: Date.now() - startedAtMs,
+            hasRaceState: resultData?.hasRaceState ?? false,
+            payloadSource: 'legacy-payload-doc',
+            payloadCacheHit,
+            eventWindowCount: resultData?.eventsWindow?.length ?? 0,
+          })
+        }
+        return exposeObservability
+          ? {
+              ...(result as Record<string, unknown>),
+              observability: {
+                payloadSource: 'legacy-payload-doc',
+                payloadCacheHit,
+                keyframeChunkReads: 0,
+                eventBucketReads: 0,
+                eventWindowCount: resultData?.eventsWindow?.length ?? 0,
+              },
+            }
+          : result
       } catch (error) {
         deps.logger.error('getRaceState error', error)
         rethrowUnexpected(error, 'Failed to get race state')
@@ -124,20 +539,22 @@ export function createRaceReadCallables(deps: RaceReadDeps) {
   const getSetResult = onCall(
     CALLABLE_OPTIONS,
     async (request) => {
+      const startedAtMs = Date.now()
       try {
-        const { roomId, playerId, sessionToken, joinToken, setIndex } = parseOrThrow(
-          getSetResultSchema,
+        const authUid = requireAuthUid(request)
+        const { roomId, playerId, sessionToken, joinToken, setIndex, includeObservability } = parseOrThrow(
+          getSetResultWithObservabilitySchema,
           request.data,
         )
-        await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken })
+        const exposeObservability = SHOULD_EXPOSE_READ_OBSERVABILITY && includeObservability === true
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
+        await deps.assertJoinedRoomPlayerRequest({ roomId, playerId, sessionToken, joinToken, authUid })
 
         const roomRef = deps.db.collection('rooms').doc(roomId)
         const setDocRef = roomRef.collection('sets').doc(`set-${setIndex}`)
-        const [setDoc, playersSnapshot, allSetSnapshot] = await Promise.all([
-          setDocRef.get(),
-          roomRef.collection('players').get(),
-          roomRef.collection('sets').where('setIndex', '<=', setIndex).get(),
-        ])
+        const setDoc = await setDocRef.get()
 
         if (!setDoc.exists) {
           throw new HttpsError('not-found', 'Set result not found')
@@ -152,17 +569,88 @@ export function createRaceReadCallables(deps: RaceReadDeps) {
               readyForNext?: Record<string, boolean>
               selections?: Record<string, string>
               availableAugmentsByPlayer?: Record<string, Augment[]>
+              setResultSummary?: SetResultSummary
             }
           | undefined
         const raceResult = setData?.raceResult
+
+        const cachedSummary = setData?.setResultSummary
+        // 결과 대기 polling 구간 비용 절감을 위해 set 요약 캐시를 최우선 사용한다.
+        if (Array.isArray(cachedSummary?.rankings) && cachedSummary.rankings.length > 0) {
+          const result = {
+            success: true,
+            hasResult: true,
+            rankings: cachedSummary.rankings,
+            startedAtMillis:
+              cachedSummary.startedAtMillis ?? setData?.raceResult?.startedAt?.toMillis?.() ?? null,
+            readyCount: countReadyForNextPlayers(setData?.readyForNext),
+            cacheHit: true,
+          }
+          if (deps.logger.info && shouldSampleRead('getSetResult')) {
+            deps.logger.info('perf.getSetResult', {
+              roomId,
+              playerId,
+              setIndex,
+              durationMs: Date.now() - startedAtMs,
+              hasResult: true,
+              cacheHit: true,
+              rankingCount: cachedSummary.rankings.length,
+              readyCount: result.readyCount,
+            })
+          }
+          return exposeObservability
+            ? {
+                ...result,
+                observability: {
+                  source: 'set-result-summary-cache',
+                  cacheHit: true,
+                  rankingCount: cachedSummary.rankings.length,
+                },
+              }
+            : result
+        }
+
         if (!raceResult?.rankings || raceResult.rankings.length === 0) {
-          return {
+          const result = {
             success: true,
             hasResult: false,
             rankings: [],
+            startedAtMillis: null,
             readyCount: countReadyForNextPlayers(setData?.readyForNext),
+            cacheHit: false,
           }
+          if (deps.logger.info && shouldSampleRead('getSetResult')) {
+            deps.logger.info('perf.getSetResult', {
+              roomId,
+              playerId,
+              setIndex,
+              durationMs: Date.now() - startedAtMs,
+              hasResult: false,
+              cacheHit: false,
+              rankingCount: 0,
+              readyCount: result.readyCount,
+            })
+          }
+          return exposeObservability
+            ? {
+                ...result,
+                observability: {
+                  source: 'set-result-unavailable',
+                  cacheHit: false,
+                  rankingCount: 0,
+                },
+              }
+            : result
         }
+
+        const [playersSnapshot, allSetSnapshot] = await Promise.all([
+          roomRef.collection('players').select('name').get(),
+          roomRef
+            .collection('sets')
+            .where('setIndex', '<=', setIndex)
+            .select('setIndex', 'selections', 'availableAugmentsByPlayer')
+            .get(),
+        ])
 
         const playersById = playersSnapshot.docs.reduce<Record<string, Player>>((acc, doc) => {
           acc[doc.id] = doc.data() as Player
@@ -176,13 +664,50 @@ export function createRaceReadCallables(deps: RaceReadDeps) {
           allSets,
         })
 
-        return {
+        await setDocRef.set(
+          {
+            setResultSummary: {
+              rankings,
+              startedAtMillis: setData?.raceResult?.startedAt?.toMillis?.() ?? null,
+              generatedAt: Timestamp.now(),
+            },
+            updatedAt: Timestamp.now(),
+          },
+          { merge: true },
+        )
+
+        const result = {
           success: true,
           hasResult: true,
           rankings,
           startedAtMillis: setData?.raceResult?.startedAt?.toMillis?.() ?? null,
           readyCount: countReadyForNextPlayers(setData?.readyForNext),
+          cacheHit: false,
         }
+        if (deps.logger.info && shouldSampleRead('getSetResult')) {
+          deps.logger.info('perf.getSetResult', {
+            roomId,
+            playerId,
+            setIndex,
+            durationMs: Date.now() - startedAtMs,
+            hasResult: true,
+            cacheHit: false,
+            rankingCount: rankings.length,
+            readyCount: result.readyCount,
+            cacheWriteBack: true,
+          })
+        }
+        return exposeObservability
+          ? {
+              ...result,
+              observability: {
+                source: 'set-result-computed',
+                cacheHit: false,
+                rankingCount: rankings.length,
+                cacheWriteBack: true,
+              },
+            }
+          : result
       } catch (error) {
         deps.logger.error('getSetResult error', error)
         rethrowUnexpected(error, 'Failed to get set result')

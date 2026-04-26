@@ -1,12 +1,34 @@
-# Root ignores
-node_modules
-dist
+# =========================
+# OS / System
+# =========================
 .DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.Spotlight-V100/
+.Trashes/
+._*
+
+# =========================
+# Root dependencies / build
+# =========================
+node_modules/
+dist/
+build/
+coverage/
+.cache/
+.turbo/
+.next/
+.parcel-cache/
+.pnpm-store/
+*.tsbuildinfo
 
 # Test directories
 map-test/
 
-# Environment files
+# =========================
+# Environment files / secrets
+# =========================
 .env
 .env.*
 !.env.example
@@ -16,16 +38,42 @@ firebase-debug.log
 firestore-debug.log
 .runtimeconfig.json
 
+# =========================
 # Functions
-functions/lib
-functions/node_modules
+# =========================
+functions/lib/
+functions/node_modules/
+functions/.env
+functions/.env.*
 
+# =========================
 # Frontend
-frontend/node_modules
-frontend/dist
+# =========================
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+!frontend/.env.production.example
+!frontend/.env.staging.example
 
-# Test scripts
-*.sh
+# =========================
+# Local tool artifacts
+# =========================
+.firebase/
+.mcp_screenshot/
+
+# =========================
+# Editor / IDE
+# =========================
+.idea/
+.cursor/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+*~
 
 # Documentation (test/guide docs only - keep main docs)
 docs/*-guide.md

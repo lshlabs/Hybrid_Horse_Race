@@ -1,4 +1,11 @@
 import { initializeApp, type FirebaseApp } from 'firebase/app'
+import {
+  connectAuthEmulator,
+  getAuth,
+  signInAnonymously,
+  type Auth,
+  type User,
+} from 'firebase/auth'
 import { connectFirestoreEmulator, getFirestore, type Firestore } from 'firebase/firestore'
 
 interface FirebaseConfig {
@@ -13,9 +20,13 @@ interface FirebaseConfig {
 
 let appInstance: FirebaseApp | null = null
 let firestoreInstance: Firestore | null = null
+let authInstance: Auth | null = null
 let isFirestoreEmulatorConnected = false
+let isAuthEmulatorConnected = false
+let anonymousAuthPromise: Promise<User> | null = null
 const DEFAULT_FIRESTORE_EMULATOR_HOST = '127.0.0.1'
 const DEFAULT_FIRESTORE_EMULATOR_PORT = 8081
+const DEFAULT_AUTH_EMULATOR_PORT = 9099
 const USE_FIREBASE_EMULATOR =
   import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true'
 const REQUIRED_CONFIG_KEYS = [
@@ -43,6 +54,11 @@ function isAlreadyConnectedFirestoreError(error: unknown): boolean {
 function resolveFirestoreEmulatorPort(rawPort?: string): number {
   const parsedPort = Number(rawPort || DEFAULT_FIRESTORE_EMULATOR_PORT)
   return Number.isFinite(parsedPort) ? parsedPort : DEFAULT_FIRESTORE_EMULATOR_PORT
+}
+
+function resolveAuthEmulatorPort(rawPort?: string): number {
+  const parsedPort = Number(rawPort || DEFAULT_AUTH_EMULATOR_PORT)
+  return Number.isFinite(parsedPort) ? parsedPort : DEFAULT_AUTH_EMULATOR_PORT
 }
 
 function getFirebaseConfig(): FirebaseConfig {
@@ -115,4 +131,51 @@ export function getFirebaseDb(): Firestore {
     }
   }
   return firestoreInstance
+}
+
+export function getFirebaseAuth(): Auth {
+  if (!authInstance) {
+    const app = getFirebaseApp()
+    authInstance = getAuth(app)
+
+    if (USE_FIREBASE_EMULATOR && !isAuthEmulatorConnected) {
+      try {
+        const emulatorHost = resolveEmulatorHost(import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_HOST)
+        const emulatorPort = resolveAuthEmulatorPort(
+          import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_PORT,
+        )
+        connectAuthEmulator(authInstance, `http://${emulatorHost}:${emulatorPort}`, {
+          disableWarnings: true,
+        })
+        isAuthEmulatorConnected = true
+        console.info(`Connected to Auth Emulator at ${emulatorHost}:${emulatorPort}`)
+      } catch (error: unknown) {
+        if (isAlreadyConnectedFirestoreError(error)) {
+          isAuthEmulatorConnected = true
+          console.info('Auth Emulator already connected')
+        } else {
+          console.warn('Auth Emulator connection error:', error)
+        }
+      }
+    }
+  }
+  return authInstance
+}
+
+export async function ensureAnonymousAuth(): Promise<User> {
+  const auth = getFirebaseAuth()
+  if (auth.currentUser) {
+    return auth.currentUser
+  }
+  if (anonymousAuthPromise) {
+    return anonymousAuthPromise
+  }
+
+  anonymousAuthPromise = signInAnonymously(auth)
+    .then((credential) => credential.user)
+    .finally(() => {
+      anonymousAuthPromise = null
+    })
+
+  return anonymousAuthPromise
 }

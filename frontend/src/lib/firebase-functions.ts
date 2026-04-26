@@ -138,7 +138,7 @@ type AugmentResponse = {
 
 export const createGuestSession = createCallable<
   { guestId?: string },
-  { guestId: string; sessionToken: string; expiresAtMillis: number }
+  { authUid: string; guestId: string; sessionToken: string; expiresAtMillis: number }
 >('createGuestSession')
 
 export const createRoom = createCallable<
@@ -289,7 +289,14 @@ export const readyNextSet = createCallable<
 >('readyNextSet')
 
 export const getSetResult = createCallable<
-  { roomId: string; playerId: string; sessionToken: string; joinToken: string; setIndex: number },
+  {
+    roomId: string
+    playerId: string
+    sessionToken: string
+    joinToken: string
+    setIndex: number
+    includeObservability?: boolean
+  },
   {
     success: boolean
     hasResult: boolean
@@ -302,11 +309,26 @@ export const getSetResult = createCallable<
     }>
     startedAtMillis: number | null
     readyCount: number
+    cacheHit?: boolean
+    observability?: {
+      source: 'set-result-summary-cache' | 'set-result-unavailable' | 'set-result-computed'
+      cacheHit: boolean
+      rankingCount: number
+      cacheWriteBack?: boolean
+    }
   }
 >('getSetResult')
 
 export const getRaceState = createCallable<
-  { roomId: string; playerId: string; sessionToken: string; joinToken: string; setIndex: number },
+  {
+    roomId: string
+    playerId: string
+    sessionToken: string
+    joinToken: string
+    setIndex: number
+    eventsSinceElapsedMs?: number
+    includeObservability?: boolean
+  },
   {
     success: boolean
     hasRaceState: boolean
@@ -367,6 +389,13 @@ export const getRaceState = createCallable<
     >
     slowmoTriggerMs?: number | null
     rankings?: Array<{ playerId: string; time: number; position: number }>
+    observability?: {
+      payloadSource: 'chunked-v2' | 'legacy-payload-doc' | 'inline-legacy' | 'missing-set-doc'
+      keyframeChunkReads: number
+      eventBucketReads: number
+      eventWindowCount: number
+      payloadCacheHit?: boolean
+    }
   }
 >('getRaceState')
 

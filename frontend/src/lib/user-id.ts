@@ -1,8 +1,10 @@
 import { createGuestSession } from './firebase-functions'
+import { ensureAnonymousAuth } from './firebase'
 
 const GUEST_SESSION_KEY = 'hybrid-horse-race-guest-session'
 
 interface GuestSession {
+  authUid: string
   guestId: string
   sessionToken: string
   expiresAtMillis: number
@@ -37,6 +39,8 @@ function removeStorageItem(key: string): void {
 function parseGuestSession(raw: string): GuestSession | null {
   const parsed = JSON.parse(raw) as Partial<GuestSession>
   if (
+    typeof parsed.authUid !== 'string' ||
+    parsed.authUid.length === 0 ||
     typeof parsed.guestId !== 'string' ||
     parsed.guestId.length === 0 ||
     typeof parsed.sessionToken !== 'string' ||
@@ -47,6 +51,7 @@ function parseGuestSession(raw: string): GuestSession | null {
     return null
   }
   return {
+    authUid: parsed.authUid,
     guestId: parsed.guestId,
     sessionToken: parsed.sessionToken,
     expiresAtMillis: parsed.expiresAtMillis,
@@ -84,6 +89,7 @@ function shouldRefreshSession(error: unknown): boolean {
 async function requestSession(existingGuestId?: string): Promise<GuestSession> {
   const response = await createGuestSession({ guestId: existingGuestId })
   const nextSession: GuestSession = {
+    authUid: response.data.authUid,
     guestId: response.data.guestId,
     sessionToken: response.data.sessionToken,
     expiresAtMillis: response.data.expiresAtMillis,
@@ -96,8 +102,9 @@ export async function ensureUserSession(): Promise<GuestSession> {
   if (bootstrapPromise) return bootstrapPromise
 
   bootstrapPromise = (async () => {
+    const authUser = await ensureAnonymousAuth()
     const cached = readCachedSession()
-    if (cached && isSessionValid(cached)) {
+    if (cached && cached.authUid === authUser.uid && isSessionValid(cached)) {
       return cached
     }
     return requestSession(cached?.guestId)

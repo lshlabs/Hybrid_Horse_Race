@@ -80,7 +80,16 @@ type AuthoritativeRaceFrame = {
 
 /** 물리 계산용 고정 스텝(초). 기록 시간은 서버 결과를 쓰지만 움직임 느낌에는 영향이 있다. */
 const PHYSICS_DT_SEC = 0.02
-const AUTHORITATIVE_POLL_INTERVAL_MS = 150
+const AUTHORITATIVE_POLL_INTERVAL_PREPARED_MS = 420
+const AUTHORITATIVE_POLL_INTERVAL_RUNNING_MS = 180
+const AUTHORITATIVE_POLL_INTERVAL_COMPLETED_MS = 320
+const AUTHORITATIVE_POLL_INTERVAL_HIDDEN_TAB_MS = 650
+const AUTHORITATIVE_POLL_FAILURE_BACKOFF_MULTIPLIER = 1.6
+const AUTHORITATIVE_POLL_FAILURE_MAX_MS = 1800
+const AUTHORITATIVE_EVENTS_WINDOW_OVERLAP_MS = 1600
+const SET_RESULT_POLL_INITIAL_DELAY_MS = 280
+const SET_RESULT_POLL_MAX_DELAY_MS = 1100
+const SET_RESULT_POLL_BACKOFF_MULTIPLIER = 1.55
 // 폴링보다 약간 늦게 렌더하면 다음 키프레임이 들어와 있을 확률이 높아서 덜 끊겨 보인다.
 const AUTHORITATIVE_RENDER_DELAY_MS = 90
 // 서버 시간으로 바로 점프하지 않고 조금씩 따라가게 해서 시간축이 튀는 느낌을 줄인다.
@@ -107,6 +116,7 @@ const AUTHORITATIVE_EVENT_CONSUME_TOLERANCE_MS = 24
 const AUTHORITATIVE_VISUAL_FINISH_EPSILON_M = 0.08
 const AUTHORITATIVE_VISUAL_FINISH_FALLBACK_MS = 1200
 const FINAL_RESULT_BACKFILL_RETRY_MAX = 3
+const FINAL_RESULT_SET_FETCH_DEDUPE_WINDOW_MS = 1400
 const RACE_START_BOOTSTRAP_MIN_DURATION_MS = 700
 const RACE_START_BOOTSTRAP_MAX_WAIT_MS = 3000
 const RACE_SCENE_KEY = 'RaceScene'
@@ -226,6 +236,8 @@ export default class RaceScene extends Phaser.Scene {
   private authoritativeWinnerFinishedEventSeen = false
   private authoritativeRaceStateStatus: 'prepared' | 'running' | 'completed' | null = null
   private authoritativeFinishPendingSinceMs: number | null = null
+  private lastAuthoritativeEventWindowMaxElapsedMs = 0
+  private consecutiveAuthoritativePollFailureCount = 0
   private authoritativeMetrics = {
     frameCount: 0,
     hardSnapCount: 0,
@@ -268,6 +280,7 @@ export default class RaceScene extends Phaser.Scene {
   private flowUI!: RaceFlowUI
   private finalResultBackfillRetryCount = 0
   private lastStartedSetTransitionTargetSet: number | null = null
+  private lastSetResultFetchAttemptMsBySet = new Map<number, number>()
 
   private hashStringToUint32(input: string): number {
     let hash = 2166136261 >>> 0
@@ -713,103 +726,146 @@ export default class RaceScene extends Phaser.Scene {
     }
   }
 
+  private computeNextAuthoritativePollDelayMs(): number {
+    const visibilityDelay =
+      typeof document !== 'undefined' && document.visibilityState === 'hidden'
+        ? AUTHORITATIVE_POLL_INTERVAL_HIDDEN_TAB_MS
+        : 0
+    const status = this.authoritativeRaceStateStatus
+    let baseDelay =
+      status === 'prepared'
+        ? AUTHORITATIVE_POLL_INTERVAL_PREPARED_MS
+        : status === 'completed'
+          ? AUTHORITATIVE_POLL_INTERVAL_COMPLETED_MS
+          : AUTHORITATIVE_POLL_INTERVAL_RUNNING_MS
+
+    if (this.consecutiveAuthoritativePollFailureCount > 0) {
+      const multiplier = Math.pow(
+        AUTHORITATIVE_POLL_FAILURE_BACKOFF_MULTIPLIER,
+        this.consecutiveAuthoritativePollFailureCount,
+      )
+      baseDelay = Math.min(AUTHORITATIVE_POLL_FAILURE_MAX_MS, Math.round(baseDelay * multiplier))
+    }
+
+    if (visibilityDelay > 0) {
+      baseDelay = Math.max(baseDelay, visibilityDelay)
+    }
+    return baseDelay
+  }
+
+  private scheduleNextServerRaceStatePoll(setIndex: number, delayMs: number) {
+    this.serverRacePollEvent?.remove(false)
+    this.serverRacePollEvent = this.time.delayedCall(delayMs, () => {
+      void this.pollServerRaceState(setIndex)
+    })
+  }
+
+  private async pollServerRaceState(setIndex: number) {
+    if (
+      !this.roomId ||
+      !this.playerId ||
+      !this.sessionToken ||
+      !this.roomJoinToken ||
+      this.isPollingServerRaceResult
+    ) {
+      this.scheduleNextServerRaceStatePoll(setIndex, this.computeNextAuthoritativePollDelayMs())
+      return
+    }
+
+    this.isPollingServerRaceResult = true
+    try {
+      const eventsSinceElapsedMs =
+        this.lastAuthoritativeEventWindowMaxElapsedMs > 0
+          ? Math.max(
+              0,
+              this.lastAuthoritativeEventWindowMaxElapsedMs -
+                AUTHORITATIVE_EVENTS_WINDOW_OVERLAP_MS,
+            )
+          : undefined
+      const response = await getRaceState({
+        roomId: this.roomId,
+        playerId: this.playerId,
+        sessionToken: this.sessionToken,
+        joinToken: this.roomJoinToken,
+        setIndex,
+        eventsSinceElapsedMs,
+      })
+
+      this.hasReceivedAnyAuthoritativePollResponse = true
+      if (!response.data.hasRaceState) {
+        this.consecutiveAuthoritativePollFailureCount = 0
+        return
+      }
+      this.authoritativeRaceStateStatus = response.data.status ?? this.authoritativeRaceStateStatus
+      if (
+        response.data.status === 'prepared' &&
+        this.isRaceStarted &&
+        this.isCurrentPlayerHost() &&
+        !this.isServerRaceRequested
+      ) {
+        void this.beginServerAuthoritativeRace({ requestStart: true })
+      }
+
+      this.authoritativeElapsedMs = response.data.elapsedMs ?? this.authoritativeElapsedMs
+      this.authoritativeNowMs = response.data.authoritativeNowMs ?? Date.now()
+      this.lastAuthoritativePollClientTimeMs = performance.now()
+      this.authoritativeKeyframe = response.data.keyframe ?? this.authoritativeKeyframe
+      this.authoritativeNextKeyframe = response.data.nextKeyframe ?? this.authoritativeNextKeyframe
+      this.pushAuthoritativeFrame(this.authoritativeKeyframe)
+      this.pushAuthoritativeFrame(this.authoritativeNextKeyframe)
+      this.authoritativeEventsWindow = (response.data.eventsWindow ?? []).map((event) => ({
+        id: event.id,
+        type: event.type,
+        elapsedMs: event.elapsedMs,
+        rank: 'rank' in event ? event.rank : undefined,
+        playerId: 'playerId' in event ? event.playerId : undefined,
+      }))
+      this.lastAuthoritativeEventWindowMaxElapsedMs = this.authoritativeEventsWindow.reduce(
+        (maxElapsed, event) => Math.max(maxElapsed, event.elapsedMs),
+        this.lastAuthoritativeEventWindowMaxElapsedMs,
+      )
+
+      if (response.data.rankings && response.data.rankings.length > 0) {
+        const nextStartedAtMillis =
+          response.data.startedAtMillis === undefined
+            ? (this.authoritativeRacePlan?.startedAtMillis ?? null)
+            : response.data.startedAtMillis
+        this.authoritativeRacePlan = {
+          rankings: response.data.rankings.map((entry) => ({
+            playerId: entry.playerId,
+            position: entry.position,
+            time: entry.time,
+          })),
+          startedAtMillis: nextStartedAtMillis,
+        }
+      }
+
+      if (shouldMarkInitialAuthoritativeFrameReceived(response.data)) {
+        this.markInitialAuthoritativeFrameReceived({
+          setIndex,
+          elapsedMs: response.data.elapsedMs,
+          hasKeyframe: !!response.data.keyframe,
+          hasNextKeyframe: !!response.data.nextKeyframe,
+        })
+      }
+      this.tryReleaseRaceStartBootstrapIfReady('first-frame')
+      this.consecutiveAuthoritativePollFailureCount = 0
+    } catch (error) {
+      this.consecutiveAuthoritativePollFailureCount += 1
+      console.warn('[RaceScene] getRaceState polling failed:', error)
+    } finally {
+      this.isPollingServerRaceResult = false
+      this.scheduleNextServerRaceStatePoll(setIndex, this.computeNextAuthoritativePollDelayMs())
+    }
+  }
+
   private startServerRaceStatePolling(setIndex: number) {
     if (this.serverRacePollEvent) {
       this.serverRacePollEvent.remove(false)
       this.serverRacePollEvent = undefined
     }
-
-    const poll = async () => {
-      if (
-        !this.roomId ||
-        !this.playerId ||
-        !this.sessionToken ||
-        !this.roomJoinToken ||
-        this.isPollingServerRaceResult
-      ) {
-        return
-      }
-
-      this.isPollingServerRaceResult = true
-      try {
-        const response = await getRaceState({
-          roomId: this.roomId,
-          playerId: this.playerId,
-          sessionToken: this.sessionToken,
-          joinToken: this.roomJoinToken,
-          setIndex,
-        })
-
-        this.hasReceivedAnyAuthoritativePollResponse = true
-        if (!response.data.hasRaceState) {
-          return
-        }
-        this.authoritativeRaceStateStatus =
-          response.data.status ?? this.authoritativeRaceStateStatus
-        if (
-          response.data.status === 'prepared' &&
-          this.isRaceStarted &&
-          this.isCurrentPlayerHost() &&
-          !this.isServerRaceRequested
-        ) {
-          void this.beginServerAuthoritativeRace({ requestStart: true })
-        }
-
-        this.authoritativeElapsedMs = response.data.elapsedMs ?? this.authoritativeElapsedMs
-        this.authoritativeNowMs = response.data.authoritativeNowMs ?? Date.now()
-        this.lastAuthoritativePollClientTimeMs = performance.now()
-        this.authoritativeKeyframe = response.data.keyframe ?? this.authoritativeKeyframe
-        this.authoritativeNextKeyframe =
-          response.data.nextKeyframe ?? this.authoritativeNextKeyframe
-        this.pushAuthoritativeFrame(this.authoritativeKeyframe)
-        this.pushAuthoritativeFrame(this.authoritativeNextKeyframe)
-        this.authoritativeEventsWindow = (response.data.eventsWindow ?? []).map((event) => ({
-          id: event.id,
-          type: event.type,
-          elapsedMs: event.elapsedMs,
-          rank: 'rank' in event ? event.rank : undefined,
-          playerId: 'playerId' in event ? event.playerId : undefined,
-        }))
-
-        if (response.data.rankings && response.data.rankings.length > 0) {
-          const nextStartedAtMillis =
-            response.data.startedAtMillis === undefined
-              ? (this.authoritativeRacePlan?.startedAtMillis ?? null)
-              : response.data.startedAtMillis
-          this.authoritativeRacePlan = {
-            rankings: response.data.rankings.map((entry) => ({
-              playerId: entry.playerId,
-              position: entry.position,
-              time: entry.time,
-            })),
-            startedAtMillis: nextStartedAtMillis,
-          }
-        }
-
-        if (shouldMarkInitialAuthoritativeFrameReceived(response.data)) {
-          this.markInitialAuthoritativeFrameReceived({
-            setIndex,
-            elapsedMs: response.data.elapsedMs,
-            hasKeyframe: !!response.data.keyframe,
-            hasNextKeyframe: !!response.data.nextKeyframe,
-          })
-        }
-        this.tryReleaseRaceStartBootstrapIfReady('first-frame')
-      } catch (error) {
-        console.warn('[RaceScene] getRaceState polling failed:', error)
-      } finally {
-        this.isPollingServerRaceResult = false
-      }
-    }
-
-    void poll()
-    this.serverRacePollEvent = this.time.addEvent({
-      delay: AUTHORITATIVE_POLL_INTERVAL_MS,
-      loop: true,
-      callback: () => {
-        void poll()
-      },
-    })
+    this.consecutiveAuthoritativePollFailureCount = 0
+    void this.pollServerRaceState(setIndex)
   }
 
   private pushAuthoritativeFrame(frame: AuthoritativeRaceFrame | undefined) {
@@ -1829,26 +1885,33 @@ export default class RaceScene extends Phaser.Scene {
 
     if (this.isCurrentPlayerHost() && this.room.status === ROOM_STATUS_RACING) {
       try {
-        await prepareRace({
-          roomId: this.roomId,
-          playerId: this.playerId,
-          sessionToken: this.sessionToken,
-          joinToken: this.roomJoinToken,
-          setIndex,
-        })
-        await startRace({
-          roomId: this.roomId,
-          playerId: this.playerId,
-          sessionToken: this.sessionToken,
-          joinToken: this.roomJoinToken,
-          setIndex,
-        })
+        if (!this.isServerRacePrepared) {
+          await prepareRace({
+            roomId: this.roomId,
+            playerId: this.playerId,
+            sessionToken: this.sessionToken,
+            joinToken: this.roomJoinToken,
+            setIndex,
+          })
+          this.isServerRacePrepared = true
+        }
+        if (!this.isServerRaceRequested) {
+          await startRace({
+            roomId: this.roomId,
+            playerId: this.playerId,
+            sessionToken: this.sessionToken,
+            joinToken: this.roomJoinToken,
+            setIndex,
+          })
+          this.isServerRaceRequested = true
+        }
       } catch (error) {
-        console.warn('[RaceScene] startRace callable failed, continue with polling:', error)
+        console.warn('[RaceScene] prepare/start callable failed, continue with polling:', error)
       }
     }
 
     const deadline = Date.now() + 10000
+    let nextDelayMs = SET_RESULT_POLL_INITIAL_DELAY_MS
 
     while (Date.now() < deadline) {
       try {
@@ -1863,12 +1926,25 @@ export default class RaceScene extends Phaser.Scene {
         if (response.data.hasResult) {
           return this.mapAuthoritativeRankingsToRoundEntries(response.data.rankings)
         }
+        nextDelayMs = Math.min(
+          SET_RESULT_POLL_MAX_DELAY_MS,
+          Math.round(nextDelayMs * SET_RESULT_POLL_BACKOFF_MULTIPLIER),
+        )
       } catch (error) {
         console.warn('[RaceScene] getSetResult polling failed:', error)
+        nextDelayMs = Math.min(
+          SET_RESULT_POLL_MAX_DELAY_MS,
+          Math.round(nextDelayMs * SET_RESULT_POLL_BACKOFF_MULTIPLIER),
+        )
       }
 
+      const remainingMs = Math.max(0, deadline - Date.now())
+      const waitMs = Math.min(nextDelayMs, remainingMs)
+      if (waitMs <= 0) {
+        break
+      }
       await new Promise((resolve) => {
-        setTimeout(resolve, 250)
+        setTimeout(resolve, waitMs)
       })
     }
 
@@ -1953,7 +2029,19 @@ export default class RaceScene extends Phaser.Scene {
 
     const targetRoundCount = this.room.roundCount ?? this.currentSet
     for (let setIndex = 1; setIndex <= targetRoundCount; setIndex++) {
-      if (this.roundResults[setIndex - 1]?.length) continue
+      if (this.roundResults[setIndex - 1]?.length) {
+        this.lastSetResultFetchAttemptMsBySet.delete(setIndex)
+        continue
+      }
+      const previousFetchAttemptAtMs = this.lastSetResultFetchAttemptMsBySet.get(setIndex)
+      const now = Date.now()
+      if (
+        typeof previousFetchAttemptAtMs === 'number' &&
+        now - previousFetchAttemptAtMs < FINAL_RESULT_SET_FETCH_DEDUPE_WINDOW_MS
+      ) {
+        continue
+      }
+      this.lastSetResultFetchAttemptMsBySet.set(setIndex, now)
 
       try {
         const response = await getSetResult({
@@ -1967,6 +2055,7 @@ export default class RaceScene extends Phaser.Scene {
         this.roundResults[setIndex - 1] = this.mapAuthoritativeRankingsToRoundEntries(
           response.data.rankings,
         )
+        this.lastSetResultFetchAttemptMsBySet.delete(setIndex)
       } catch (error) {
         if (import.meta.env.DEV) {
           console.warn('[RaceScene] fillMissingRoundResultsFromServer failed:', { setIndex, error })
@@ -2073,6 +2162,8 @@ export default class RaceScene extends Phaser.Scene {
     this.authoritativeWinnerFinishedEventSeen = false
     this.authoritativeFinishPendingSinceMs = null
     this.authoritativeRaceStateStatus = null
+    this.lastAuthoritativeEventWindowMaxElapsedMs = 0
+    this.consecutiveAuthoritativePollFailureCount = 0
     this.authoritativeMetrics = {
       frameCount: 0,
       hardSnapCount: 0,
@@ -2083,6 +2174,7 @@ export default class RaceScene extends Phaser.Scene {
     }
     this.isServerRaceRequested = false
     this.isServerRacePrepared = false
+    this.lastSetResultFetchAttemptMsBySet.clear()
     this.isPollingServerRaceResult = false
     this.serverRacePollEvent?.remove(false)
     this.serverRacePollEvent = undefined
@@ -2282,8 +2374,6 @@ export default class RaceScene extends Phaser.Scene {
     if (!this.isWaitingForNextSetTransition || this.isSyncingNextSetTransition) {
       return
     }
-    const nextSetContext = this.getNextSetSyncRequestContext()
-    if (!nextSetContext) return
 
     if (this.tryResolveNextSetFromRoomStatus()) {
       return
@@ -2296,15 +2386,12 @@ export default class RaceScene extends Phaser.Scene {
       return
     }
 
-    this.logNextSetTransitionDebug('polling:readyNextSetRetry')
+    // ready-signal 완전 전환:
+    // 추가 callable 재호출 없이 room 상태 스냅샷이 넘어오기를 기다린다.
+    this.logNextSetTransitionDebug('polling:waitingForRoomStatusSignal')
     this.isSyncingNextSetTransition = true
     try {
-      const response = await readyNextSet({
-        ...nextSetContext,
-        setIndex: this.currentSet,
-      })
-
-      this.applyReadyNextSetResponse(response.data)
+      this.tryResolveNextSetFromRoomStatus()
     } catch (error) {
       if (import.meta.env.DEV) {
         console.warn('[RaceScene] retryNextSetTransition failed:', error)

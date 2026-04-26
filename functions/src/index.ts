@@ -12,10 +12,8 @@ import {
 } from '../../shared/race-core'
 import {
   getRoom,
-  isRoomFull,
   isHost,
   isPlayerInRoom,
-  areAllPlayersReady,
   updateRoomStatus,
 } from './utils'
 import type { RoomStatus, Player, Augment, AugmentRarity, StatName } from './types'
@@ -78,6 +76,7 @@ const { getSortedSetSummaries, buildGetRaceStateResponse, buildSetResultRankings
 const {
   createGuestId,
   createSessionToken,
+  hashSessionToken,
   issueRoomJoinToken,
   verifyRoomJoinToken,
   verifyGuestSession,
@@ -280,12 +279,10 @@ const roomLifecycleCallables = createRoomLifecycleCallables({
   isValidPlayerName,
   createGuestId,
   createSessionToken,
+  hashSessionToken,
   issueRoomJoinToken,
   verifyGuestSession,
   getRoom,
-  isPlayerInRoom,
-  isRoomFull,
-  areAllPlayersReady,
   assertJoinedRoomPlayerRequest,
   assertHostWaitingRoomActionRequest,
 })
@@ -321,6 +318,7 @@ export const updatePlayerName = roomLifecycleCallables.updatePlayerName
 export const setPlayerReady = roomLifecycleCallables.setPlayerReady
 export const leaveRoom = roomLifecycleCallables.leaveRoom
 export const leaveRoomOnUnload = roomLifecycleCallables.leaveRoomOnUnload
+export const cleanupPendingLeaves = roomLifecycleCallables.cleanupPendingLeaves
 export const updateRoomSettings = roomLifecycleCallables.updateRoomSettings
 export const startGame = roomLifecycleCallables.startGame
 

@@ -2,6 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import { FieldValue, Timestamp } from 'firebase-admin/firestore'
 import { z } from 'zod'
 import type { Augment, AugmentRarity, Player } from '../types'
+import { CALLABLE_OPTIONS } from '../common/cors-options'
 
 type LoggerLike = {
   info: (message: string, context?: Record<string, unknown>) => void
@@ -15,12 +16,18 @@ type SelectionDeps = {
   updateRoomStatus: (roomId: string, status: 'horseSelection' | 'augmentSelection' | 'racing') => Promise<void>
   isPlayerInRoom: (roomId: string, playerId: string) => Promise<boolean>
   verifyGuestSession: (playerId: string, sessionToken: string) => Promise<void>
-  verifyRoomJoinToken: (roomId: string, playerId: string, joinToken: string) => Promise<void>
+  verifyRoomJoinToken: (
+    roomId: string,
+    playerId: string,
+    joinToken: string,
+    authUid?: string,
+  ) => Promise<void>
   assertAugmentSelectionRequestContext: (params: {
     roomId: string
     playerId: string
     sessionToken: string
     joinToken: string
+    authUid?: string
     setIndex: number
     statusMessage: string
   }) => Promise<{ rerollLimit: number }>
@@ -74,7 +81,6 @@ const rerollAugmentsSchema = z.object({
   ...authenticatedPlayerRequestSchema,
   setIndex: z.number().int().min(1),
 })
-const CALLABLE_OPTIONS = { region: 'asia-northeast3', cors: true } as const
 const STATUS_HORSE_SELECTION = 'horseSelection' as const
 const STATUS_AUGMENT_SELECTION = 'augmentSelection' as const
 const STATUS_RACING = 'racing' as const
@@ -97,16 +103,28 @@ export function createSelectionCallables(deps: SelectionDeps) {
     throw new HttpsError('internal', publicMessage)
   }
 
+  function requireAuthUid(request: { auth?: { uid?: string } | null }): string {
+    const authUid = request.auth?.uid
+    if (!authUid) {
+      throw new HttpsError('unauthenticated', 'Authentication required')
+    }
+    return authUid
+  }
+
   const selectHorse = onCall(
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const { roomId, playerId, sessionToken, joinToken, horseStats } = parseOrThrow(
           selectHorseSchema,
           request.data,
         )
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         await deps.verifyGuestSession(playerId, sessionToken)
-        await deps.verifyRoomJoinToken(roomId, playerId, joinToken)
+        await deps.verifyRoomJoinToken(roomId, playerId, joinToken, authUid)
 
         const room = await deps.getRoom(roomId)
         if (room.status !== STATUS_HORSE_SELECTION) {
@@ -116,37 +134,69 @@ export function createSelectionCallables(deps: SelectionDeps) {
           )
         }
 
+        const roomRef = deps.db.collection('rooms').doc(roomId)
         const playerRef = deps.db.collection('rooms').doc(roomId).collection('players').doc(playerId)
-        const playerDoc = await playerRef.get()
-        if (!playerDoc.exists) throw new HttpsError('not-found', 'Player not found in room')
+        const selectionResult = await deps.db.runTransaction(async (tx) => {
+          const now = Timestamp.now()
+          const [roomDoc, playerDoc, playersSnapshot] = await Promise.all([
+            tx.get(roomRef),
+            tx.get(playerRef),
+            tx.get(roomRef.collection('players')),
+          ])
 
-        const player = playerDoc.data() as Player
-        if (player.horseStats) {
-          throw new HttpsError('failed-precondition', 'Horse has already been selected for this player')
-        }
+          if (!roomDoc.exists) {
+            throw new HttpsError('not-found', `Room ${roomId} not found`)
+          }
+          const roomData = roomDoc.data() as { status?: string } | undefined
+          if (roomData?.status !== STATUS_HORSE_SELECTION) {
+            throw new HttpsError(
+              'failed-precondition',
+              'Horse can only be selected during horseSelection phase',
+            )
+          }
 
-        await playerRef.update({
-          horseStats,
-          currentSetLuckBonus: 0,
-          updatedAt: Timestamp.now(),
+          if (!playerDoc.exists) {
+            throw new HttpsError('not-found', 'Player not found in room')
+          }
+
+          const player = playerDoc.data() as Player
+          if (player.horseStats) {
+            throw new HttpsError('failed-precondition', 'Horse has already been selected for this player')
+          }
+
+          tx.update(playerRef, {
+            horseStats,
+            currentSetLuckBonus: 0,
+            updatedAt: now,
+          })
+
+          const allSelected = playersSnapshot.docs.every((doc) => {
+            if (doc.id === playerId) return true
+            return (doc.data() as Player).horseStats !== undefined
+          })
+
+          if (allSelected) {
+            tx.update(roomRef, {
+              status: STATUS_AUGMENT_SELECTION,
+              updatedAt: now,
+            })
+          }
+
+          return { allSelected, playerCount: playersSnapshot.size }
         })
 
-        const playersSnapshot = await deps.db.collection('rooms').doc(roomId).collection('players').get()
-        const allSelected = playersSnapshot.docs.every((doc) => (doc.data() as Player).horseStats !== undefined)
-
-        if (allSelected) {
-          await deps.updateRoomStatus(roomId, STATUS_AUGMENT_SELECTION)
+        if (selectionResult.allSelected) {
           deps.logger.info('All players selected horse, moving to augment selection', {
             roomId,
-            playerCount: playersSnapshot.size,
+            playerCount: selectionResult.playerCount,
           })
         }
 
         deps.logger.info('Horse selected', { roomId, playerId, horseStats })
         return {
           success: true,
-          allPlayersSelected: allSelected,
-          nextStatus: allSelected ? STATUS_AUGMENT_SELECTION : STATUS_HORSE_SELECTION,
+          allPlayersSelected: selectionResult.allSelected,
+          nextStatus: selectionResult.allSelected ? STATUS_AUGMENT_SELECTION : STATUS_HORSE_SELECTION,
         }
       } catch (error) {
         deps.logger.error('selectHorse error', error)
@@ -159,15 +209,20 @@ export function createSelectionCallables(deps: SelectionDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const { roomId, playerId, sessionToken, joinToken, setIndex } = parseOrThrow(
           getAugmentSelectionSchema,
           request.data,
         )
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         await deps.assertAugmentSelectionRequestContext({
           roomId,
           playerId,
           sessionToken,
           joinToken,
+          authUid,
           setIndex,
           statusMessage: 'Augment can only be requested during augmentSelection phase',
         })
@@ -232,81 +287,101 @@ export function createSelectionCallables(deps: SelectionDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const { roomId, playerId, sessionToken, joinToken, setIndex, augmentId } = parseOrThrow(
           selectAugmentSchema,
           request.data,
         )
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
         await deps.assertAugmentSelectionRequestContext({
           roomId,
           playerId,
           sessionToken,
           joinToken,
+          authUid,
           setIndex,
           statusMessage: 'Augment can only be selected during augmentSelection phase',
         })
 
-        const playerRef = deps.db.collection('rooms').doc(roomId).collection('players').doc(playerId)
-        const playerDoc = await playerRef.get()
-        if (!playerDoc.exists) throw new HttpsError('not-found', 'Player not found in room')
+        const roomRef = deps.db.collection('rooms').doc(roomId)
+        const playerRef = roomRef.collection('players').doc(playerId)
+        const setDocRef = roomRef.collection('sets').doc(`set-${setIndex}`)
 
-        const setDocRef = deps.db.collection('rooms').doc(roomId).collection('sets').doc(`set-${setIndex}`)
-        const setDoc = await setDocRef.get()
-        const setData = setDoc.data() as
-          | { availableAugmentsByPlayer?: Record<string, Augment[]>; selections?: Record<string, string> }
-          | undefined
-        const existingSelections = setData?.selections ?? {}
-        if (existingSelections[playerId]) {
-          throw new HttpsError('failed-precondition', 'Augment already selected for this set')
-        }
+        const transactionResult = await deps.db.runTransaction(async (tx) => {
+          const now = Timestamp.now()
+          const [playerDoc, setDoc, playersSnapshot] = await Promise.all([
+            tx.get(playerRef),
+            tx.get(setDocRef),
+            tx.get(roomRef.collection('players')),
+          ])
 
-        const availableChoices = setData?.availableAugmentsByPlayer?.[playerId] ?? []
-        const selectedAugment = availableChoices.find((augment) => augment.id === augmentId)
-        if (!selectedAugment) {
-          throw new HttpsError('failed-precondition', 'Selected augment is not available for player')
-        }
+          if (!playerDoc.exists) {
+            throw new HttpsError('not-found', 'Player not found in room')
+          }
 
-        await playerRef.update({
-          selectedAugments: FieldValue.arrayUnion({ setIndex, augmentId }),
-          updatedAt: Timestamp.now(),
+          const setData = setDoc.data() as
+            | { availableAugmentsByPlayer?: Record<string, Augment[]>; selections?: Record<string, string> }
+            | undefined
+          const existingSelections = setData?.selections ?? {}
+          if (existingSelections[playerId]) {
+            throw new HttpsError('failed-precondition', 'Augment already selected for this set')
+          }
+
+          const availableChoices = setData?.availableAugmentsByPlayer?.[playerId] ?? []
+          const selectedAugment = availableChoices.find((augment) => augment.id === augmentId)
+          if (!selectedAugment) {
+            throw new HttpsError('failed-precondition', 'Selected augment is not available for player')
+          }
+
+          const nextSelections = { ...existingSelections, [playerId]: augmentId }
+          tx.update(playerRef, {
+            selectedAugments: FieldValue.arrayUnion({ setIndex, augmentId }),
+            updatedAt: now,
+          })
+          tx.set(
+            setDocRef,
+            { setIndex, selections: nextSelections, updatedAt: now },
+            { merge: true },
+          )
+
+          const allSelected =
+            playersSnapshot.size > 0 &&
+            Object.keys(nextSelections).length >= playersSnapshot.size &&
+            playersSnapshot.docs.every((doc) => !!nextSelections[doc.id])
+
+          if (allSelected) {
+            const availableAugmentsByPlayer = setData?.availableAugmentsByPlayer ?? {}
+            playersSnapshot.docs.forEach((doc) => {
+              const playerData = doc.data() as Player
+              const selectedId = nextSelections[doc.id]
+              const augment = availableAugmentsByPlayer[doc.id]?.find((entry) => entry.id === selectedId)
+              const persistentStats = deps.applyAugmentToHorseStats(playerData.horseStats, augment)
+              if (!persistentStats) return
+
+              const luckBonus = deps.calculateLuckBonus(persistentStats.Luck)
+              const nextHorseStats = deps.applyLuckBonusToHorseStats(persistentStats, luckBonus)
+              tx.update(doc.ref, {
+                horseStats: nextHorseStats,
+                currentSetLuckBonus: luckBonus,
+                updatedAt: now,
+              })
+            })
+
+            tx.update(roomRef, { status: STATUS_RACING, updatedAt: now })
+          }
+
+          return { allSelected }
         })
 
-        await setDocRef.set(
-          { setIndex, selections: { [playerId]: augmentId }, updatedAt: Timestamp.now() },
-          { merge: true },
-        )
-
-        const playersSnapshot = await deps.db.collection('rooms').doc(roomId).collection('players').get()
-        const nextSelections = { ...existingSelections, [playerId]: augmentId }
-        const allSelected =
-          playersSnapshot.size > 0 &&
-          Object.keys(nextSelections).length >= playersSnapshot.size &&
-          playersSnapshot.docs.every((doc) => !!nextSelections[doc.id])
-
-        if (allSelected) {
-          const availableAugmentsByPlayer = setData?.availableAugmentsByPlayer ?? {}
-          const batch = deps.db.batch()
-
-          playersSnapshot.docs.forEach((doc) => {
-            const playerData = doc.data() as Player
-            const selectedId = nextSelections[doc.id]
-            const augment = availableAugmentsByPlayer[doc.id]?.find((entry) => entry.id === selectedId)
-            const persistentStats = deps.applyAugmentToHorseStats(playerData.horseStats, augment)
-            if (!persistentStats) return
-
-            const luckBonus = deps.calculateLuckBonus(persistentStats.Luck)
-            const nextHorseStats = deps.applyLuckBonusToHorseStats(persistentStats, luckBonus)
-            batch.update(doc.ref, {
-              horseStats: nextHorseStats,
-              currentSetLuckBonus: luckBonus,
-              updatedAt: Timestamp.now(),
-            })
-          })
-
-          await batch.commit()
-          await deps.updateRoomStatus(roomId, STATUS_RACING)
-        }
-
-        deps.logger.info('Augment selected', { roomId, playerId, setIndex, augmentId, allSelected })
+        deps.logger.info('Augment selected', {
+          roomId,
+          playerId,
+          setIndex,
+          augmentId,
+          allSelected: transactionResult.allSelected,
+        })
         return { success: true }
       } catch (error) {
         deps.logger.error('selectAugment error', error)
@@ -319,79 +394,122 @@ export function createSelectionCallables(deps: SelectionDeps) {
     CALLABLE_OPTIONS,
     async (request) => {
       try {
+        const authUid = requireAuthUid(request)
         const { roomId, playerId, sessionToken, joinToken, setIndex } = parseOrThrow(
           rerollAugmentsSchema,
           request.data,
         )
-        const room = await deps.assertAugmentSelectionRequestContext({
+        if (playerId !== authUid) {
+          throw new HttpsError('permission-denied', 'Player identity mismatch')
+        }
+        await deps.assertAugmentSelectionRequestContext({
           roomId,
           playerId,
           sessionToken,
           joinToken,
+          authUid,
           setIndex,
           statusMessage: 'Augments can only be rerolled during augmentSelection phase',
         })
 
-        const playerRef = deps.db.collection('rooms').doc(roomId).collection('players').doc(playerId)
-        const playerDoc = await playerRef.get()
-        const playerData = playerDoc.data() as (Player & { rerollUsed?: number }) | undefined
-        if (!playerData) throw new HttpsError('not-found', 'Player not found in room')
+        const roomRef = deps.db.collection('rooms').doc(roomId)
+        const playerRef = roomRef.collection('players').doc(playerId)
+        const setDocRef = roomRef.collection('sets').doc(`set-${setIndex}`)
 
-        const setDocRef = deps.db.collection('rooms').doc(roomId).collection('sets').doc(`set-${setIndex}`)
-        const setDoc = await setDocRef.get()
-        const setData = setDoc.data() as
-          | {
-              rarity?: Exclude<AugmentRarity, 'hidden'>
-              availableAugmentsByPlayer?: Record<string, Augment[]>
-              selections?: Record<string, string>
-            }
-          | undefined
+        const transactionResult = await deps.db.runTransaction(async (tx) => {
+          const now = Timestamp.now()
+          const [roomDoc, playerDoc, setDoc] = await Promise.all([
+            tx.get(roomRef),
+            tx.get(playerRef),
+            tx.get(setDocRef),
+          ])
 
-        const selections = setData?.selections ?? {}
-        if (selections[playerId]) {
-          throw new HttpsError('failed-precondition', 'Cannot reroll after augment is already selected')
-        }
+          if (!roomDoc.exists) {
+            throw new HttpsError('not-found', `Room ${roomId} not found`)
+          }
 
-        const rerollUsed = playerData.rerollUsed ?? 0
-        if (rerollUsed >= room.rerollLimit) {
-          throw new HttpsError('resource-exhausted', 'No rerolls remaining for this player')
-        }
+          const roomData = roomDoc.data() as {
+            status?: string
+            currentSet?: number
+            rerollLimit?: number
+            rerollUsed?: number
+          }
+          if (roomData.status !== STATUS_AUGMENT_SELECTION || roomData.currentSet !== setIndex) {
+            throw new HttpsError(
+              'failed-precondition',
+              'Augments can only be rerolled during augmentSelection phase',
+            )
+          }
 
-        const rerollIndex = rerollUsed + 1
-        const seedKey = `augment|room:${roomId}|set:${setIndex}|player:${playerId}|reroll:${rerollIndex}`
-        const rng = deps.createSeededRandom(seedKey)
-        const rarity = setData?.rarity ?? deps.pickRandomSeeded(deps.augmentRarities, rng)
-        const newAugments = deps.generateServerAugmentChoices(rarity, rng, seedKey)
+          const playerData = playerDoc.data() as (Player & { rerollUsed?: number }) | undefined
+          if (!playerData) {
+            throw new HttpsError('not-found', 'Player not found in room')
+          }
 
-        await playerRef.update({ rerollUsed: rerollUsed + 1, updatedAt: Timestamp.now() })
-        await setDocRef.set(
-          {
-            setIndex,
-            rarity,
-            availableAugmentsByPlayer: { [playerId]: newAugments },
-            deterministicMeta: { source: 'seeded-rng-v1', seedKey, rarity, rerollIndex },
-            updatedAt: Timestamp.now(),
-          },
-          { merge: true },
-        )
-        await deps.db.collection('rooms').doc(roomId).update({
-          rerollUsed: FieldValue.increment(1),
-          updatedAt: Timestamp.now(),
+          const setData = setDoc.data() as
+            | {
+                rarity?: Exclude<AugmentRarity, 'hidden'>
+                availableAugmentsByPlayer?: Record<string, Augment[]>
+                selections?: Record<string, string>
+              }
+            | undefined
+          const selections = setData?.selections ?? {}
+          if (selections[playerId]) {
+            throw new HttpsError('failed-precondition', 'Cannot reroll after augment is already selected')
+          }
+
+          const rerollLimit = typeof roomData.rerollLimit === 'number' ? roomData.rerollLimit : 0
+          const rerollUsed = playerData.rerollUsed ?? 0
+          if (rerollUsed >= rerollLimit) {
+            throw new HttpsError('resource-exhausted', 'No rerolls remaining for this player')
+          }
+
+          const rerollIndex = rerollUsed + 1
+          const seedKey = `augment|room:${roomId}|set:${setIndex}|player:${playerId}|reroll:${rerollIndex}`
+          const rng = deps.createSeededRandom(seedKey)
+          const rarity = setData?.rarity ?? deps.pickRandomSeeded(deps.augmentRarities, rng)
+          const newAugments = deps.generateServerAugmentChoices(rarity, rng, seedKey)
+          const availableAugmentsByPlayer = {
+            ...(setData?.availableAugmentsByPlayer ?? {}),
+            [playerId]: newAugments,
+          }
+
+          tx.update(playerRef, { rerollUsed: rerollIndex, updatedAt: now })
+          tx.set(
+            setDocRef,
+            {
+              setIndex,
+              rarity,
+              availableAugmentsByPlayer,
+              deterministicMeta: { source: 'seeded-rng-v1', seedKey, rarity, rerollIndex },
+              updatedAt: now,
+            },
+            { merge: true },
+          )
+          tx.update(roomRef, {
+            rerollUsed: (typeof roomData.rerollUsed === 'number' ? roomData.rerollUsed : 0) + 1,
+            updatedAt: now,
+          })
+
+          return { newAugments, rerollUsed: rerollIndex, rerollLimit, seedKey }
         })
 
         deps.logger.info('Augments rerolled', {
           roomId,
           playerId,
           setIndex,
-          rerollUsed: rerollUsed + 1,
-          seedKey,
+          rerollUsed: transactionResult.rerollUsed,
+          seedKey: transactionResult.seedKey,
         })
 
         return {
           success: true,
-          newAugments,
-          rerollUsed: rerollUsed + 1,
-          remainingRerolls: Math.max(0, room.rerollLimit - (rerollUsed + 1)),
+          newAugments: transactionResult.newAugments,
+          rerollUsed: transactionResult.rerollUsed,
+          remainingRerolls: Math.max(
+            0,
+            transactionResult.rerollLimit - transactionResult.rerollUsed,
+          ),
         }
       } catch (error) {
         deps.logger.error('rerollAugments error', error)

@@ -165,7 +165,6 @@ export function RaceResultPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams] = useSearchParams()
-  const isDev = import.meta.env.DEV
 
   const state = location.state as LocationState | null
   const roundResultsFromState = state?.roundResults
@@ -245,16 +244,6 @@ export function RaceResultPage() {
   }
 
   const [finalRankings] = useState<FinalRanking[]>(buildInitialFinalRankings)
-
-  if (!isDev) {
-    return (
-      <div className="flex h-screen w-screen items-center justify-center bg-gray-900">
-        <div className="text-center text-white">
-          <p className="text-xl">이 페이지는 개발 모드에서만 사용할 수 있습니다.</p>
-        </div>
-      </div>
-    )
-  }
 
   return (
     <div className="container mx-auto min-h-screen px-0 sm:px-4 py-8">
